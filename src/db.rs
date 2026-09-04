@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDateTime, Utc};
-use dirs::data_dir;
 use rusqlite::{params, Connection, OptionalExtension};
+use std::fs;
 use std::path::PathBuf;
 
 use crate::models::{
@@ -774,9 +774,17 @@ fn day_start(dt: DateTime<Utc>) -> DateTime<Utc> {
     DateTime::<Utc>::from_naive_utc_and_offset(naive, Utc)
 }
 
+/// App data dir: `$XDG_DATA_HOME/anki-tui` or `~/.local/share/anki-tui` on all platforms.
 pub fn collection_dir() -> Result<PathBuf> {
-    let base = data_dir().context("cannot resolve user data directory")?;
-    Ok(base.join("anki-tui"))
+    let dir = match std::env::var_os("XDG_DATA_HOME") {
+        Some(xdg) if !xdg.is_empty() => PathBuf::from(xdg).join("anki-tui"),
+        _ => {
+            let home = dirs::home_dir().context("cannot resolve home directory")?;
+            home.join(".local/share/anki-tui")
+        }
+    };
+    fs::create_dir_all(&dir).with_context(|| format!("create data dir {}", dir.display()))?;
+    Ok(dir)
 }
 
 fn default_db_path() -> Result<PathBuf> {

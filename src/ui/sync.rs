@@ -222,7 +222,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(Color::DarkGray),
         )),
         Line::from(Span::styled(
-            "Media files live under …/anki-tui/anki/collection.media/",
+            "Media: ~/.local/share/anki-tui/anki/collection.media/",
             Style::default().fg(Color::DarkGray),
         )),
         Line::from(Span::styled(

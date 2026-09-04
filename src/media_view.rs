@@ -1,9 +1,15 @@
-//! Study-time media: mpv for audio, Kitty graphics protocol for images.
+//! Study-time media: mpv for audio, ratatui-image (Kitty/Sixel/halfblocks) for images.
 
 use anyhow::{bail, Context, Result};
-use base64::Engine;
+use image::ImageReader;
+use ratatui::Frame;
+use ratatui_image::{
+    picker::{Picker, ProtocolType},
+    protocol::StatefulProtocol,
+    Resize, StatefulImage,
+};
 use regex::Regex;
-use std::io::{stdout, Write};
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::OnceLock;
@@ -34,43 +40,122 @@ impl ParsedCardText {
     pub fn has_sound(&self) -> bool {
         self.sound_count() > 0
     }
+
+    pub fn has_image(&self) -> bool {
+        self.media.iter().any(|m| matches!(m, MediaRef::Image(_)))
+    }
+
+    pub fn first_image(&self) -> Option<&str> {
+        self.media.iter().find_map(|m| match m {
+            MediaRef::Image(f) => Some(f.as_str()),
+            _ => None,
+        })
+    }
 }
 
 /// Nerd Font md-play (U+F040A). Requires a Nerd Font in the terminal.
 pub const NF_PLAY: &str = "󰐊";
 
-pub fn parse_card_text(raw: &str) -> ParsedCardText {
-    let sound_re = sound_re();
+/// Ordered pieces of a card field — preserves `<img>` position relative to text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FlowItem {
+    Text(String),
+    Image(String),
+}
+
+/// Split `raw` into text/image items in document order (img tags become Image items).
+pub fn parse_flow(raw: &str) -> Vec<FlowItem> {
     let img_re = img_re();
+    let mut items = Vec::new();
+    let mut last = 0usize;
+    for cap in img_re.captures_iter(raw) {
+        let full = cap.get(0).expect("img match");
+        let fname = cap
+            .get(1)
+            .map(|m| m.as_str())
+            .unwrap_or("")
+            .to_string();
+        if full.start() > last {
+            push_flow_text(&mut items, clean_text_segment(&raw[last..full.start()]), true);
+        }
+        if !fname.is_empty() {
+            items.push(FlowItem::Image(fname));
+        }
+        last = full.end();
+    }
+    if last < raw.len() {
+        // After an <img>, keep blank lines that separate it from following text.
+        push_flow_text(&mut items, clean_text_segment(&raw[last..]), false);
+    }
+    items
+}
 
+/// `trim_all`: true for text before an image (drop surrounding blank lines).
+/// false for text after an image — keep blank lines that visually separate.
+fn push_flow_text(items: &mut Vec<FlowItem>, chunk: String, trim_all: bool) {
+    let chunk = if trim_all {
+        chunk.trim().to_string()
+    } else {
+        // The char right after `>` is usually a newline ending the img line —
+        // drop only that one; keep further blank lines as spacing under the image.
+        let rest = chunk.strip_prefix('\n').unwrap_or(chunk.as_str());
+        rest.trim_start_matches([' ', '\t'])
+            .trim_end_matches([' ', '\t', '\r'])
+            .to_string()
+    };
+    if chunk.is_empty() {
+        return;
+    }
+    // Keep pure blank-line spacers (e.g. only `\n` left after the strip above).
+    if trim_all || !chunk.trim().is_empty() || chunk.contains('\n') {
+        items.push(FlowItem::Text(chunk));
+    }
+}
+
+fn clean_text_segment(raw: &str) -> String {
+    let sound_re = sound_re();
+    let mut display = sound_re
+        .replace_all(raw, format!(" {NF_PLAY} "))
+        .into_owned();
+    // Keep line breaks from HTML before stripping other tags.
+    static BR: OnceLock<Regex> = OnceLock::new();
+    let br_re = BR.get_or_init(|| Regex::new(r"(?i)<br\s*/?>").expect("br regex"));
+    display = br_re.replace_all(&display, "\n").into_owned();
+    let html_re = html_tag_re();
+    display = html_re.replace_all(&display, "").into_owned();
+    display
+        .replace("&nbsp;", " ")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+}
+
+pub fn parse_card_text(raw: &str) -> ParsedCardText {
+    let flow = parse_flow(raw);
     let mut media = Vec::new();
-    let mut display = raw.to_string();
+    let mut display_parts = Vec::new();
 
-    for cap in sound_re.captures_iter(raw) {
+    // Also collect sounds from original (parse_flow only keeps images as items).
+    for cap in sound_re().captures_iter(raw) {
         let fname = cap.get(1).map(|m| m.as_str()).unwrap_or("").to_string();
         if !fname.is_empty() {
             media.push(MediaRef::Sound(fname));
         }
     }
-    // Inline play button (Nerd Font) where [sound:…] was
-    display = sound_re
-        .replace_all(&display, format!(" {NF_PLAY} "))
-        .into_owned();
 
-    for cap in img_re.captures_iter(raw) {
-        let fname = cap.get(1).map(|m| m.as_str()).unwrap_or("").to_string();
-        if !fname.is_empty() {
-            media.push(MediaRef::Image(fname));
+    for item in flow {
+        match item {
+            FlowItem::Text(t) => display_parts.push(t),
+            FlowItem::Image(f) => {
+                media.push(MediaRef::Image(f));
+            }
         }
     }
-    display = img_re.replace_all(&display, "[img]").into_owned();
 
-    // Collapse leftover HTML tags lightly for terminal readability
-    let html_re = html_tag_re();
-    display = html_re.replace_all(&display, "").into_owned();
-    display = display.replace("&nbsp;", " ").replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&");
-
-    ParsedCardText { display, media }
+    ParsedCardText {
+        display: display_parts.join("\n"),
+        media,
+    }
 }
 
 fn sound_re() -> &'static Regex {
@@ -87,31 +172,48 @@ fn img_re() -> &'static Regex {
 
 fn html_tag_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?i)</?(br|div|span|b|i|u|p|anki)[^>]*>").expect("html regex"))
+    // `br` is converted to `\n` earlier — do not strip those newlines away.
+    RE.get_or_init(|| Regex::new(r"(?i)</?(div|span|b|i|u|p|anki)[^>]*>").expect("html regex"))
 }
 
 pub fn media_path(fname: &str) -> Result<PathBuf> {
     let folder = paths::media_folder()?;
-    // Anki media names are flat; reject path traversal
     let name = Path::new(fname)
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| fname.to_string());
     let path = folder.join(&name);
     if !path.exists() {
-        bail!("media file missing: {name} (sync media with F6)");
+        bail!("media file missing: {name} under {}", folder.display());
     }
     Ok(path)
 }
 
 pub fn kitty_supported() -> bool {
-    std::env::var_os("KITTY_WINDOW_ID").is_some()
-        || std::env::var("TERM")
-            .map(|t| t.contains("kitty") || t.contains("xterm-kitty"))
-            .unwrap_or(false)
-        || std::env::var("TERM_PROGRAM")
-            .map(|t| t.eq_ignore_ascii_case("WezTerm") || t.eq_ignore_ascii_case("kitty"))
-            .unwrap_or(false)
+    if std::env::var_os("KITTY_WINDOW_ID").is_some() {
+        return true;
+    }
+    if std::env::var_os("KITTY_PID").is_some() {
+        return true;
+    }
+    if std::env::var_os("WEZTERM_EXECUTABLE").is_some() {
+        return true;
+    }
+    if std::env::var("TERM")
+        .map(|t| {
+            let t = t.to_ascii_lowercase();
+            t.contains("kitty") || t.contains("wezterm")
+        })
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    std::env::var("TERM_PROGRAM")
+        .map(|t| {
+            let t = t.to_ascii_lowercase();
+            t.contains("kitty") || t.contains("wezterm")
+        })
+        .unwrap_or(false)
 }
 
 pub fn mpv_available() -> bool {
@@ -127,8 +229,11 @@ pub fn mpv_available() -> bool {
 /// Active media playback / display session for the study screen.
 pub struct MediaSession {
     player: Option<Child>,
-    shown_image_ids: Vec<u32>,
-    last_key: Option<(i64, bool)>, // (card_id, answer_shown)
+    picker: Option<Picker>,
+    image: Option<StatefulProtocol>,
+    last_key: Option<(i64, bool)>,
+    last_image_src: Option<String>,
+    pub last_image_status: Option<String>,
 }
 
 impl Default for MediaSession {
@@ -141,9 +246,42 @@ impl MediaSession {
     pub fn new() -> Self {
         Self {
             player: None,
-            shown_image_ids: Vec::new(),
+            picker: None,
+            image: None,
             last_key: None,
+            last_image_src: None,
+            last_image_status: None,
         }
+    }
+
+    /// Detect terminal graphics capability. Call once after `ratatui::init()`.
+    pub fn init_picker(&mut self) {
+        if self.picker.is_some() {
+            return;
+        }
+        let picker = match Picker::from_query_stdio() {
+            Ok(p) => p,
+            Err(_) => {
+                // Fallback when capability query fails (e.g. nested TERM).
+                let mut p = Picker::halfblocks();
+                if kitty_supported() {
+                    p.set_protocol_type(ProtocolType::Kitty);
+                }
+                p
+            }
+        };
+        self.picker = Some(picker);
+    }
+
+    /// Drop detected picker (e.g. after TUI suspend/restore).
+    pub fn picker_reset(&mut self) {
+        self.picker = None;
+        self.clear_images();
+        self.last_key = None;
+    }
+
+    pub fn has_ready_image(&self) -> bool {
+        self.image.is_some()
     }
 
     pub fn stop_audio(&mut self) {
@@ -154,62 +292,136 @@ impl MediaSession {
     }
 
     pub fn clear_images(&mut self) {
-        if !self.shown_image_ids.is_empty() || kitty_supported() {
-            // Delete all Kitty images placed by this process
-            let _ = write!(stdout(), "\x1b_Ga=d\x1b\\");
-            let _ = stdout().flush();
-        }
-        self.shown_image_ids.clear();
+        self.image = None;
+        self.last_image_src = None;
     }
 
     pub fn reset(&mut self) {
         self.stop_audio();
         self.clear_images();
         self.last_key = None;
+        self.last_image_status = None;
     }
 
-    /// Autoplay sounds / show images when the visible card side changes.
-    pub fn on_card_side(
+    /// Load / refresh image + autoplay audio when the visible card side changes.
+    pub fn prepare_card(
         &mut self,
         card_id: i64,
         answer_shown: bool,
         front: &str,
         back: &str,
-        image_area: ratatui::layout::Rect,
     ) -> Result<()> {
-        let key = (card_id, answer_shown);
-        if self.last_key == Some(key) {
-            // Still re-place images each frame (ratatui redraw clears them)
-            self.place_images(front, back, answer_shown, image_area)?;
-            return Ok(());
-        }
-        self.last_key = Some(key);
-        self.stop_audio();
-        self.clear_images();
+        self.init_picker();
 
+        let key = (card_id, answer_shown);
         let text = if answer_shown {
             format!("{front}\n{back}")
         } else {
             front.to_string()
         };
         let parsed = parse_card_text(&text);
+        let img_src = parsed.first_image().map(|s| s.to_string());
 
-        // Play first sound (Anki-style); user can press `m` to replay all
-        if let Some(MediaRef::Sound(fname)) = parsed.media.iter().find(|m| matches!(m, MediaRef::Sound(_)))
-        {
-            match media_path(fname) {
-                Ok(path) => {
-                    if let Err(e) = self.play_mpv(&path) {
-                        // non-fatal
-                        let _ = e;
-                    }
+        let side_changed = self.last_key != Some(key);
+        self.last_key = Some(key);
+
+        if side_changed {
+            self.stop_audio();
+            if let Some(MediaRef::Sound(fname)) = parsed
+                .media
+                .iter()
+                .find(|m| matches!(m, MediaRef::Sound(_)))
+            {
+                if let Ok(path) = media_path(fname) {
+                    let _ = self.play_mpv(&path);
                 }
-                Err(_) => {}
             }
         }
 
-        self.place_images(front, back, answer_shown, image_area)?;
+        if img_src == self.last_image_src && self.image.is_some() {
+            return Ok(());
+        }
+
+        self.last_image_src = img_src.clone();
+        match img_src {
+            Some(fname) => self.load_image(&fname),
+            None => {
+                self.image = None;
+                self.last_image_status = None;
+                Ok(())
+            }
+        }
+    }
+
+    fn load_image(&mut self, fname: &str) -> Result<()> {
+        let Some(picker) = self.picker.as_ref() else {
+            self.last_image_status = Some("img: picker not ready".into());
+            return Ok(());
+        };
+        let path = match media_path(fname) {
+            Ok(p) => p,
+            Err(e) => {
+                self.image = None;
+                self.last_image_status = Some(format!("img: {e:#}"));
+                return Ok(());
+            }
+        };
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) => {
+                self.image = None;
+                self.last_image_status = Some(format!("img read: {e}"));
+                return Ok(());
+            }
+        };
+        let dyn_img = match ImageReader::new(Cursor::new(bytes))
+            .with_guessed_format()
+            .context("guess image format")
+            .and_then(|r| r.decode().context("decode image"))
+        {
+            Ok(img) => img,
+            Err(e) => {
+                self.image = None;
+                self.last_image_status = Some(format!("img decode: {e:#}"));
+                return Ok(());
+            }
+        };
+
+        self.image = Some(picker.new_resize_protocol(dyn_img));
+        self.last_image_status = None;
         Ok(())
+    }
+
+    /// Preferred cell size for the loaded image within `max` (does not grow to fill).
+    pub fn image_cell_size(&self, max: ratatui::layout::Size) -> Option<ratatui::layout::Size> {
+        let proto = self.image.as_ref()?;
+        // Cap so Fit does not upscale into a giant empty placement.
+        let capped = ratatui::layout::Size::new(
+            max.width.min(48).max(4),
+            max.height.min(18).max(4),
+        );
+        Some(proto.size_for(Resize::Fit(None), capped))
+    }
+
+    /// Draw the loaded image into `area`, centered within the pane.
+    pub fn render_image(&mut self, frame: &mut Frame, area: ratatui::layout::Rect) {
+        if self.image.is_none() || area.width < 2 || area.height < 2 {
+            return;
+        }
+        let needed = self
+            .image_cell_size(ratatui::layout::Size::new(area.width, area.height))
+            .unwrap_or(ratatui::layout::Size::new(area.width, area.height));
+        let w = needed.width.min(area.width).max(1);
+        let h = needed.height.min(area.height).max(1);
+        let centered = ratatui::layout::Rect {
+            x: area.x + (area.width.saturating_sub(w)) / 2,
+            y: area.y + (area.height.saturating_sub(h)) / 2,
+            width: w,
+            height: h,
+        };
+        let proto = self.image.as_mut().unwrap();
+        let widget = StatefulImage::new().resize(Resize::Fit(None));
+        frame.render_stateful_widget(widget, centered, proto);
     }
 
     pub fn replay_sounds(&mut self, front: &str, back: &str, answer_shown: bool) -> Result<String> {
@@ -233,7 +445,6 @@ impl MediaSession {
         if sounds.is_empty() {
             return Ok("No audio on this side".into());
         }
-        // Play all sequentially via one mpv playlist
         let paths: Result<Vec<_>, _> = sounds.iter().map(|f| media_path(f)).collect();
         let paths = paths?;
         self.stop_audio();
@@ -287,72 +498,12 @@ impl MediaSession {
         self.player = Some(child);
         Ok(())
     }
-
-    fn place_images(
-        &mut self,
-        front: &str,
-        back: &str,
-        answer_shown: bool,
-        area: ratatui::layout::Rect,
-    ) -> Result<()> {
-        if area.width < 4 || area.height < 2 {
-            return Ok(());
-        }
-        if !kitty_supported() {
-            return Ok(());
-        }
-        let text = if answer_shown {
-            format!("{front}\n{back}")
-        } else {
-            front.to_string()
-        };
-        let parsed = parse_card_text(&text);
-        let images: Vec<_> = parsed
-            .media
-            .iter()
-            .filter_map(|m| match m {
-                MediaRef::Image(f) => Some(f.as_str()),
-                _ => None,
-            })
-            .collect();
-        if images.is_empty() {
-            return Ok(());
-        }
-
-        // Clear previous placements then draw first image into the content area
-        let _ = write!(stdout(), "\x1b_Ga=d\x1b\\");
-        self.shown_image_ids.clear();
-
-        let fname = images[0];
-        let Ok(path) = media_path(fname) else {
-            return Ok(());
-        };
-
-        let id = 42u32; // stable id for study image
-        let cols = area.width.saturating_sub(2).max(1);
-        let rows = area.height.saturating_sub(1).max(1);
-        // 1-based cursor position: leave one row for the "Front/Back" label
-        let row = area.y.saturating_add(2) + 1;
-        let col = area.x.saturating_add(1) + 1;
-
-        let engine = base64::engine::general_purpose::STANDARD;
-        let path_b64 = engine.encode(path.to_string_lossy().as_bytes());
-
-        let mut out = stdout();
-        // Save cursor, move, transmit+display file via Kitty, restore
-        write!(
-            out,
-            "\x1b[s\x1b[{row};{col}H\x1b_Ga=T,f=100,t=f,i={id},c={cols},r={rows},q=2;{path_b64}\x1b\\\x1b[u"
-        )?;
-        out.flush()?;
-        self.shown_image_ids.push(id);
-        Ok(())
-    }
 }
 
 impl Drop for MediaSession {
     fn drop(&mut self) {
-        self.reset();
+        self.stop_audio();
+        self.clear_images();
     }
 }
 
@@ -366,10 +517,38 @@ mod tests {
             r#"Hello [sound:foo.mp3]<br><img src="bar.png" alt="x"> world"#,
         );
         assert!(p.display.contains(NF_PLAY));
-        assert!(p.display.contains("[img]"));
+        assert!(!p.display.contains("[img]"));
+        assert!(!p.display.contains("bar.png"));
         assert!(p.media.contains(&MediaRef::Sound("foo.mp3".into())));
         assert!(p.media.contains(&MediaRef::Image("bar.png".into())));
         assert!(p.has_sound());
+        assert!(p.has_image());
+        assert_eq!(p.first_image(), Some("bar.png"));
         assert_eq!(p.sound_count(), 1);
+    }
+
+    #[test]
+    fn flow_keeps_img_before_following_text() {
+        let flow = parse_flow("<img src=\"apple.jpeg\">\n苹果");
+        assert_eq!(
+            flow,
+            vec![
+                FlowItem::Image("apple.jpeg".into()),
+                FlowItem::Text("苹果".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn flow_keeps_blank_line_under_img() {
+        // Field: <img…>\n\n苹果  → one blank line under the image
+        let flow = parse_flow("<img src=\"apple.jpeg\">\n\n苹果");
+        assert_eq!(
+            flow,
+            vec![
+                FlowItem::Image("apple.jpeg".into()),
+                FlowItem::Text("\n苹果".into()),
+            ]
+        );
     }
 }

@@ -65,8 +65,8 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
             app.modal = Modal::ConfirmDeleteCard;
         }
         KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => save(app)?,
-        // Ctrl+i (Kitty/WezTerm distinguish it from Tab) or Alt+i
-        KeyCode::Char('i')
+        // Ctrl+o / Alt+o — open image via yazi (Ctrl+i == Tab in Kitty)
+        KeyCode::Char('o')
             if key.modifiers.contains(KeyModifiers::CONTROL)
                 || key.modifiers.contains(KeyModifiers::ALT) =>
         {
@@ -251,7 +251,7 @@ pub fn after_delete_from_study(app: &mut App) -> Result<()> {
     Ok(())
 }
 
-pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
+pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     let panes = Layout::horizontal([Constraint::Percentage(48), Constraint::Percentage(52)])
         .areas::<2>(area);
 
@@ -269,9 +269,9 @@ fn draw_editor_pane(frame: &mut Frame, area: Rect, app: &App) {
     .areas::<4>(area);
 
     let hint = if app.edit_return == Screen::Study {
-        "From study · Tab · Ctrl+i/Alt+i image (yazi) · Ctrl+s save · Esc"
+        "From study · Tab · Ctrl+o/Alt+o image · Ctrl+s save · Esc"
     } else {
-        "Tab · Ctrl+i/Alt+i image (yazi) · Ctrl+s save · Esc"
+        "Tab · Ctrl+o/Alt+o image · Ctrl+s save · Esc"
     };
     frame.render_widget(
         Paragraph::new(hint).block(
@@ -305,11 +305,23 @@ fn draw_editor_pane(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn draw_preview_pane(frame: &mut Frame, area: Rect, app: &App) {
+fn draw_preview_pane(frame: &mut Frame, area: Rect, app: &mut App) {
     let chunks = Layout::vertical([Constraint::Min(6), Constraint::Length(3)]).areas::<2>(area);
 
     // Mirror study: editing Front → Question side; Back/Tags → Answer side
     let answer_shown = app.edit_field != AddField::Front;
+    let _ = app.media.prepare_card(
+        -1,
+        answer_shown,
+        app.edit_front.value(),
+        app.edit_back.value(),
+    );
+    if let Some(msg) = app.media.last_image_status.clone() {
+        if app.status != msg {
+            app.status = msg;
+        }
+    }
+
     study::draw_card_preview(
         frame,
         chunks[0],
@@ -317,6 +329,7 @@ fn draw_preview_pane(frame: &mut Frame, area: Rect, app: &App) {
         app.edit_back.value(),
         answer_shown,
         Some("Preview"),
+        Some(&mut app.media),
     );
 
     let mode = if answer_shown {

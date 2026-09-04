@@ -27,7 +27,7 @@ Terminal Anki-like spaced repetition app written in Rust (ratatui + FSRS).
 |------|----------|--------|
 | **[mpv](https://mpv.io/)** | Audio playback (`[sound:…]`) | Required to hear card audio. Install e.g. `brew install mpv` |
 | **Nerd Font** (e.g. JetBrainsMono NF) | Play icon `󰐊` on cards with audio | Optional; without it the glyph may look like a box |
-| **[yazi](https://yazi-rs.github.io/)** | Pick images in Add/Edit (`Ctrl+i` / `Alt+i`) | Optional. Install yazi; without it, insert image shows an error. |
+| **[yazi](https://yazi-rs.github.io/)** | Pick images in Add/Edit (`Ctrl+o` / `Alt+o`) | Optional. Install yazi; without it, insert image shows an error. |
 | **[Kitty](https://sw.kovidgoyal.net/kitty/)** (or a Kitty-protocol terminal) | Inline images (`<img src="…">`) | Requires [Kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/). WezTerm also works. Plain terminals show `[img]` placeholders only. |
 
 Without mpv, study still works but audio is skipped. Without Kitty protocol, images show as `[img]` placeholders only.
@@ -40,7 +40,9 @@ cargo run --release
 
 Prefer running inside **Kitty** (or WezTerm) so images render.
 
-Data (macOS): `~/Library/Application Support/anki-tui/`
+Data dir (all platforms): `~/.local/share/anki-tui/`  
+(or `$XDG_DATA_HOME/anki-tui` if set)
+
 - `collection.db` — TUI database
 - `anki/collection.media/` — media files
 - `anki/collection.anki2` — AnkiWeb shadow collection
@@ -53,7 +55,7 @@ Press `?` inside the app for the full help screen.
 |--------|------|
 | Decks | `Enter` study · `a` add · `b` browse · `y` sync · `s` stats · `o` options · `n`/`r`/`d` deck CRUD · `q` quit |
 | Study | `Space` show · `1`–`4` rate · `m` replay audio · `Esc` back |
-| Add/Edit | `Tab` fields · Edit: `Enter` newline · `Ctrl+i`/`Alt+i` image (yazi) · `Ctrl+s` save · `Shift+D` delete · Add: `Enter` save · `Esc` cancel |
+| Add/Edit | `Tab` fields · Edit: `Enter` newline · `Ctrl+o`/`Alt+o` image (yazi) · `Ctrl+s` save · `Shift+D` delete · Add: `Enter` save · `Esc` cancel |
 | Browse | `/` search · `Enter` edit · `s` suspend |
 
 ## AnkiWeb sync

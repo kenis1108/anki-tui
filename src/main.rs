@@ -7,8 +7,12 @@ mod sync;
 mod ui;
 
 use anyhow::{Context, Result};
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
+};
+use crossterm::execute;
 use ratatui::DefaultTerminal;
+use std::io::stdout;
 use std::time::Duration;
 
 use crate::db::Store;
@@ -21,8 +25,12 @@ fn main() -> Result<()> {
     let mut app = App::new(store, scheduler)?;
 
     let mut terminal = ratatui::init();
+    let _ = execute!(stdout(), EnableBracketedPaste);
+    // Query Kitty/Sixel/etc. once; may briefly touch stdin before the event loop.
+    app.media.init_picker();
     let result = run(&mut terminal, &mut app);
     app.media.reset();
+    let _ = execute!(stdout(), DisableBracketedPaste);
     ratatui::restore();
     result
 }
@@ -35,35 +43,7 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
             continue;
         }
 
-        let image_area = terminal.draw(|frame| ui::draw(frame, app))?.area;
-        // After ratatui paints, place Kitty images / autoplay audio for study
-        if app.screen == Screen::Study {
-            if let Some(card) = app.study_queue.get(app.study_index) {
-                // Content pane is roughly below the 3-line meta header inside main area.
-                // Use the same vertical split as study::draw.
-                let main = {
-                    let area = image_area;
-                    let chunks = ratatui::layout::Layout::vertical([
-                        ratatui::layout::Constraint::Length(1),
-                        ratatui::layout::Constraint::Min(0),
-                        ratatui::layout::Constraint::Length(1),
-                    ])
-                    .areas::<3>(area);
-                    chunks[1]
-                };
-                let (_meta, face, _actions) = ui::study::layout_areas(main);
-                let content = ui::study::card_face_inner(face);
-                let _ = app.media.on_card_side(
-                    card.card.id,
-                    app.answer_shown,
-                    &card.front,
-                    &card.back,
-                    content,
-                );
-            }
-        } else {
-            app.media.reset();
-        }
+        terminal.draw(|frame| ui::draw(frame, app))?;
 
         if event::poll(Duration::from_millis(100))? {
             match event::read()? {
@@ -75,6 +55,9 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
                     } else {
                         app.handle_key(key)?;
                     }
+                }
+                Event::Paste(text) => {
+                    app.handle_paste(&text)?;
                 }
                 Event::Resize(_, _) => {}
                 _ => {}
@@ -98,7 +81,11 @@ fn run_external(
                 _ => ui::edit::insert_image_via_yazi(app),
             };
             *terminal = ratatui::init();
+            let _ = execute!(stdout(), EnableBracketedPaste);
             let _ = terminal.clear();
+            // Re-detect graphics after alternate screen restore.
+            app.media.picker_reset();
+            app.media.init_picker();
             match result {
                 Ok(Some(fname)) => {
                     app.status = format!("Inserted <img src=\"{fname}\">");

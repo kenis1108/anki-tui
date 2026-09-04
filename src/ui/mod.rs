@@ -203,6 +203,47 @@ impl App {
         Ok(())
     }
 
+    pub fn handle_paste(&mut self, text: &str) -> Result<()> {
+        if self.modal != Modal::None {
+            if matches!(self.modal, Modal::CreateDeck | Modal::RenameDeck) {
+                common::input_insert_text(&mut self.modal_input, text);
+            }
+            return Ok(());
+        }
+        match self.screen {
+            Screen::EditNote => {
+                let input = match self.edit_field {
+                    AddField::Front => &mut self.edit_front,
+                    AddField::Back => &mut self.edit_back,
+                    AddField::Tags => &mut self.edit_tags,
+                };
+                common::input_insert_text(input, text);
+            }
+            Screen::AddNote => {
+                let input = match self.add_field {
+                    AddField::Front => &mut self.add_front,
+                    AddField::Back => &mut self.add_back,
+                    AddField::Tags => &mut self.add_tags,
+                };
+                common::input_insert_text(input, text);
+            }
+            Screen::Browse => {
+                common::input_insert_text(&mut self.browse_query, text);
+            }
+            Screen::Sync => {
+                if !self.sync_busy {
+                    let input = match self.sync_field {
+                        sync::SyncField::User => &mut self.sync_user,
+                        sync::SyncField::Pass => &mut self.sync_pass,
+                    };
+                    common::input_insert_text(input, text);
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     fn handle_modal_key(&mut self, key: KeyEvent) -> Result<()> {
         match self.modal {
             Modal::Help => {
@@ -299,7 +340,7 @@ impl App {
     }
 }
 
-pub fn draw(frame: &mut Frame, app: &App) {
+pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     let chunks = Layout::vertical([
         Constraint::Length(1),
@@ -310,14 +351,32 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     draw_title(frame, chunks[0], app);
     match app.screen {
-        Screen::DeckBrowser => decks::draw(frame, chunks[1], app),
+        Screen::DeckBrowser => {
+            app.media.reset();
+            decks::draw(frame, chunks[1], app);
+        }
         Screen::Study => study::draw(frame, chunks[1], app),
-        Screen::AddNote => add::draw(frame, chunks[1], app),
-        Screen::Browse => browse::draw(frame, chunks[1], app),
-        Screen::Stats => stats::draw(frame, chunks[1], app),
+        Screen::AddNote => {
+            app.media.reset();
+            add::draw(frame, chunks[1], app);
+        }
+        Screen::Browse => {
+            app.media.reset();
+            browse::draw(frame, chunks[1], app);
+        }
+        Screen::Stats => {
+            app.media.reset();
+            stats::draw(frame, chunks[1], app);
+        }
         Screen::EditNote => edit::draw(frame, chunks[1], app),
-        Screen::DeckOptions => options::draw(frame, chunks[1], app),
-        Screen::Sync => sync::draw(frame, chunks[1], app),
+        Screen::DeckOptions => {
+            app.media.reset();
+            options::draw(frame, chunks[1], app);
+        }
+        Screen::Sync => {
+            app.media.reset();
+            sync::draw(frame, chunks[1], app);
+        }
     }
     draw_status(frame, chunks[2], app);
 
@@ -354,10 +413,10 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
     let hints = match app.screen {
         Screen::DeckBrowser => "Enter study · a add · b browse · f reset deck · y sync · s stats · q quit",
         Screen::Study => "Space show · 1-4 rate · e edit · f forget · m audio · Esc decks",
-        Screen::AddNote => "Tab fields · Ctrl+i image · Enter save · Esc back",
+        Screen::AddNote => "Tab fields · Ctrl+o/Alt+o image · Enter save · Esc back",
         Screen::Browse => "/ search · Enter edit · s suspend · f forget · Esc decks",
         Screen::Stats => "Esc decks",
-        Screen::EditNote => "Tab fields · Enter newline · Ctrl+i image · Ctrl+s save · Esc",
+        Screen::EditNote => "Tab fields · Enter newline · Ctrl+o/Alt+o image · Ctrl+s save · Esc",
         Screen::DeckOptions => "Tab fields · Enter save · Esc decks",
         Screen::Sync => "F1 login · F5 incremental · F6 media · F2/F3 full · Esc",
     };

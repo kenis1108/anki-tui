@@ -51,7 +51,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(Color::DarkGray),
         )),
         Line::from(Span::styled(
-            "Database: ~/.local/share/anki-tui/collection.db (platform data dir)",
+            "Database: ~/.local/share/anki-tui/collection.db",
             Style::default().fg(Color::DarkGray),
         )),
     ])

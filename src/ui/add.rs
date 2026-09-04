@@ -31,7 +31,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 AddField::Tags => AddField::Back,
             };
         }
-        KeyCode::Char('i')
+        KeyCode::Char('o')
             if key.modifiers.contains(KeyModifiers::CONTROL)
                 || key.modifiers.contains(KeyModifiers::ALT) =>
         {

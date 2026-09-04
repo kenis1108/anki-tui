@@ -33,6 +33,13 @@ pub fn input_from_key(input: &mut Input, key: KeyEvent) -> bool {
     }
 }
 
+/// Insert a clipboard / bracketed-paste payload at the caret.
+pub fn input_insert_text(input: &mut Input, text: &str) {
+    for ch in text.chars() {
+        let _ = input.handle(InputRequest::InsertChar(ch));
+    }
+}
+
 /// Draw a bordered text field and place the terminal cursor at the real
 /// `tui_input` caret (not glued to the end of the string).
 pub fn draw_input_field(
@@ -243,7 +250,7 @@ pub fn help_text() -> String {
         "Add / Edit",
         "  Tab           next field",
         "  Enter         newline (edit)",
-        "  Ctrl+i/Alt+i  insert image via yazi (Front/Back)",
+        "  Ctrl+o/Alt+o  insert image via yazi (Front/Back)",
         "  Ctrl+s        save note (edit)",
         "  Enter         save (add)",
         "  Esc           cancel",

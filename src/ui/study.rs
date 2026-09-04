@@ -104,7 +104,7 @@ fn rate(app: &mut App, rating: Rating) -> Result<()> {
     Ok(())
 }
 
-/// Main study pane splits — keep in sync with `main.rs` image placement.
+/// Main study pane splits — keep in sync with study layout.
 pub fn layout_areas(main: Rect) -> (Rect, Rect, Rect) {
     let chunks = Layout::vertical([
         Constraint::Length(1),
@@ -115,18 +115,8 @@ pub fn layout_areas(main: Rect) -> (Rect, Rect, Rect) {
     (chunks[0], chunks[1], chunks[2])
 }
 
-/// Inner card-face area (inside the content block border) for Kitty images.
-pub fn card_face_inner(content: Rect) -> Rect {
-    Rect {
-        x: content.x.saturating_add(1),
-        y: content.y.saturating_add(1),
-        width: content.width.saturating_sub(2),
-        height: content.height.saturating_sub(2),
-    }
-}
-
-pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
-    let Some(card) = app.study_queue.get(app.study_index) else {
+pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
+    let Some(card) = app.study_queue.get(app.study_index).cloned() else {
         frame.render_widget(
             Paragraph::new("No cards to study.")
                 .alignment(Alignment::Center)
@@ -136,11 +126,20 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
         return;
     };
 
+    let _ = app
+        .media
+        .prepare_card(card.card.id, app.answer_shown, &card.front, &card.back);
+    if let Some(msg) = app.media.last_image_status.clone() {
+        if app.status != msg {
+            app.status = msg;
+        }
+    }
+
     let (meta_area, face_area, action_area) = layout_areas(area);
 
-    draw_meta(frame, meta_area, app, card);
-    draw_card_face(frame, face_area, app, card);
-    draw_actions(frame, action_area, app, card);
+    draw_meta(frame, meta_area, app, &card);
+    draw_card_face(frame, face_area, app, &card);
+    draw_actions(frame, action_area, app, &card);
 }
 
 fn draw_meta(frame: &mut Frame, area: Rect, app: &App, card: &crate::models::StudyCard) {
@@ -182,7 +181,7 @@ fn draw_meta(frame: &mut Frame, area: Rect, app: &App, card: &crate::models::Stu
 fn draw_card_face(
     frame: &mut Frame,
     area: Rect,
-    app: &App,
+    app: &mut App,
     card: &crate::models::StudyCard,
 ) {
     draw_card_preview(
@@ -192,11 +191,14 @@ fn draw_card_face(
         &card.back,
         app.answer_shown,
         None,
+        Some(&mut app.media),
     );
 }
 
 /// Study-style card face (question centered / answer with FrontSide + hr + Back).
 /// Used by Study and by Edit's live preview pane.
+///
+/// Images are placed in document order (where `<img>` appears in the field).
 pub fn draw_card_preview(
     frame: &mut Frame,
     area: Rect,
@@ -204,15 +206,15 @@ pub fn draw_card_preview(
     back_raw: &str,
     answer_shown: bool,
     title_prefix: Option<&str>,
+    mut media: Option<&mut crate::media_view::MediaSession>,
 ) {
-    let front = parse_card_text(front_raw);
-    let back = parse_card_text(back_raw);
+    use crate::media_view::{parse_flow, FlowItem};
+
     let side = if answer_shown {
         parse_card_text(&format!("{front_raw}\n{back_raw}"))
     } else {
-        front.clone()
+        parse_card_text(front_raw)
     };
-    let inner_h = area.height.saturating_sub(2) as usize;
 
     let kind = if side.has_sound() {
         if answer_shown {
@@ -229,67 +231,194 @@ pub fn draw_card_preview(
         Some(p) => format!(" {p} · {kind} "),
         None => format!(" {kind} "),
     };
-
-    let lines = if answer_shown {
-        answer_lines(&front.display, &back.display, inner_h)
+    let border_style = Style::default().fg(if answer_shown {
+        Color::Green
     } else {
-        question_lines(&front.display, inner_h)
+        Color::Cyan
+    });
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(border_style);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // Build flow: front items, optional separator, back items — keep img order.
+    #[derive(Clone)]
+    enum Row {
+        Text { text: String, style: Style },
+        Separator,
+        Blank,
+        Image,
+    }
+
+    let mut rows: Vec<Row> = Vec::new();
+    let front_style = if answer_shown {
+        Style::default().fg(Color::DarkGray)
+    } else {
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD)
+    };
+    let back_style = Style::default()
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
+
+    let push_text_rows = |rows: &mut Vec<Row>, text: String, style: Style| {
+        // Leading blank lines (after <img>, etc.) become explicit Blank rows.
+        let mut rest = text.as_str();
+        while let Some(r) = rest.strip_prefix('\n') {
+            rows.push(Row::Blank);
+            rest = r;
+        }
+        if !rest.is_empty() {
+            rows.push(Row::Text {
+                text: rest.to_string(),
+                style,
+            });
+        } else if text.is_empty() {
+            rows.push(Row::Blank);
+        }
     };
 
-    frame.render_widget(
-        Paragraph::new(lines)
-            .alignment(Alignment::Center)
-            .wrap(Wrap { trim: false })
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(title)
-                    .border_style(Style::default().fg(if answer_shown {
-                        Color::Green
-                    } else {
-                        Color::Cyan
-                    })),
-            ),
-        area,
-    );
-}
+    for item in parse_flow(front_raw) {
+        match item {
+            FlowItem::Text(t) => push_text_rows(&mut rows, t, front_style),
+            FlowItem::Image(_) => rows.push(Row::Image),
+        }
+    }
+    if answer_shown {
+        rows.push(Row::Separator);
+        for item in parse_flow(back_raw) {
+            match item {
+                FlowItem::Text(t) => push_text_rows(&mut rows, t, back_style),
+                FlowItem::Image(_) => rows.push(Row::Image),
+            }
+        }
+    }
 
-fn question_lines(front: &str, inner_h: usize) -> Vec<Line<'static>> {
-    let body = text_lines(
-        front,
-        Style::default()
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD),
-    );
-    vertically_center(body, inner_h)
-}
+    let show_image = media.as_ref().is_some_and(|m| m.has_ready_image());
+    if !show_image {
+        rows.retain(|r| !matches!(r, Row::Image));
+    }
 
-fn answer_lines(front: &str, back: &str, inner_h: usize) -> Vec<Line<'static>> {
-    let mut body = Vec::new();
-    body.extend(text_lines(front, Style::default().fg(Color::DarkGray)));
-    body.push(Line::from(""));
-    body.push(Line::from(Span::styled(
-        "─".repeat(24),
-        Style::default().fg(Color::DarkGray),
-    )));
-    body.push(Line::from(""));
-    body.extend(text_lines(
-        back,
-        Style::default()
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD),
-    ));
-    vertically_center(body, inner_h)
+    if rows.is_empty() {
+        frame.render_widget(
+            Paragraph::new("(empty)")
+                .alignment(Alignment::Center)
+                .style(front_style),
+            inner,
+        );
+        return;
+    }
+
+    // Fixed row heights (image capped), then pad so the whole stack is centered.
+    let img_h = media
+        .as_ref()
+        .and_then(|m| {
+            m.image_cell_size(ratatui::layout::Size::new(
+                inner.width,
+                inner.height.saturating_sub(6),
+            ))
+        })
+        .map(|s| s.height.max(4))
+        .unwrap_or(10);
+
+    let row_heights: Vec<u16> = rows
+        .iter()
+        .map(|r| match r {
+            Row::Text { text, .. } => {
+                let lines = if text.is_empty() {
+                    1
+                } else {
+                    text.lines().count().max(1) as u16
+                };
+                lines.min(16).max(1)
+            }
+            Row::Separator => 3,
+            Row::Blank => 1,
+            Row::Image => img_h,
+        })
+        .collect();
+
+    let content_h: u16 = row_heights.iter().sum();
+    let spare = inner.height.saturating_sub(content_h);
+    let pad_top = spare / 2;
+    let pad_bottom = spare.saturating_sub(pad_top);
+
+    let mut constraints: Vec<Constraint> = Vec::with_capacity(rows.len() + 2);
+    if pad_top > 0 {
+        constraints.push(Constraint::Length(pad_top));
+    }
+    for h in &row_heights {
+        constraints.push(Constraint::Length(*h));
+    }
+    if pad_bottom > 0 {
+        constraints.push(Constraint::Length(pad_bottom));
+    }
+
+    let chunks = Layout::vertical(constraints).split(inner);
+    let row_chunks = if pad_top > 0 {
+        &chunks[1..1 + rows.len()]
+    } else {
+        &chunks[..rows.len()]
+    };
+
+    let mut image_drawn = false;
+    for (row, rect) in rows.iter().zip(row_chunks.iter()) {
+        match row {
+            Row::Text { text, style } => {
+                let body = text_lines(text, *style);
+                frame.render_widget(
+                    Paragraph::new(body)
+                        .alignment(Alignment::Center)
+                        .wrap(Wrap { trim: false }),
+                    *rect,
+                );
+            }
+            Row::Separator => {
+                let line = Line::from(Span::styled(
+                    "─".repeat(24),
+                    Style::default().fg(Color::DarkGray),
+                ));
+                frame.render_widget(
+                    Paragraph::new(vec![Line::from(""), line, Line::from("")])
+                        .alignment(Alignment::Center),
+                    *rect,
+                );
+            }
+            Row::Blank => {
+                frame.render_widget(Paragraph::new(""), *rect);
+            }
+            Row::Image => {
+                if let Some(ref mut m) = media {
+                    if !image_drawn {
+                        m.render_image(frame, *rect);
+                        image_drawn = true;
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn text_lines(text: &str, style: Style) -> Vec<Line<'static>> {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return vec![Line::from(Span::styled("(empty)", style))];
+    // Preserve blank lines from the field (e.g. empty line under <img>).
+    if text.is_empty() {
+        return vec![Line::from("")];
     }
-    trimmed
-        .lines()
-        .map(|l| Line::from(spans_with_play_icon(l, style)))
+    if text.trim().is_empty() {
+        return text.lines().map(|_| Line::from("")).collect();
+    }
+    text.lines()
+        .map(|l| {
+            if l.trim().is_empty() {
+                Line::from("")
+            } else {
+                Line::from(spans_with_play_icon(l, style))
+            }
+        })
         .collect()
 }
 
@@ -311,24 +440,6 @@ fn spans_with_play_icon(text: &str, style: Style) -> Vec<Span<'static>> {
         spans.push(Span::styled(rest.to_string(), style));
     }
     spans
-}
-
-fn vertically_center(body: Vec<Line<'static>>, inner_h: usize) -> Vec<Line<'static>> {
-    if inner_h == 0 {
-        return body;
-    }
-    let n = body.len();
-    if n >= inner_h {
-        return body;
-    }
-    let pad_top = (inner_h - n) / 2;
-    let mut out = Vec::with_capacity(inner_h);
-    out.extend((0..pad_top).map(|_| Line::from("")));
-    out.extend(body);
-    while out.len() < inner_h {
-        out.push(Line::from(""));
-    }
-    out
 }
 
 fn side_has_audio(card: &crate::models::StudyCard, answer_shown: bool) -> bool {

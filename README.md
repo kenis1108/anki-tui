@@ -92,7 +92,7 @@ When an unmarked legacy shadow is found, the app still opens on the Decks screen
 
 - A shadow `collection.anki2` is stored under the app data dir (`…/anki-tui/anki/`) and opened directly by Anki's official backend.
 - Deck operations, browsing, note edits, scheduling, and review history all modify that same collection; there is no lossy import/export step.
-- When signed in, an initialized official collection syncs automatically at startup and before a normal exit.
+- When signed in, an initialized official collection syncs automatically at startup and before a normal exit. Exit sync displays live collection/media progress and closes the TUI when complete.
 - **F5** calls the same normal collection sync API as Anki Desktop, followed by official media sync.
 - Sync actions run in the background so progress and failures remain visible in the TUI.
 - If Anki requests a one-way sync, F5 asks you to choose F2/F3 instead of guessing a direction.

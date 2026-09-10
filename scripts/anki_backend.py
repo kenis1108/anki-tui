@@ -540,6 +540,83 @@ def wait_for_media(col: Collection, report_progress: bool = False) -> dict:
     }
 
 
+def clean_progress_text(value: str) -> str:
+    return value.replace("\u2068", "").replace("\u2069", "").strip()
+
+
+def media_progress_detail(media: dict) -> str:
+    return " · ".join(
+        clean_progress_text(value)
+        for value in (media["added"], media["removed"], media["checked"])
+        if value
+    )
+
+
+def media_sync_with_collection(col: Collection, auth: SyncAuth) -> dict:
+    emit_progress("Starting media sync")
+    col.sync_media(auth)
+    media = wait_for_media(col, report_progress=True)
+    emit_progress("Syncing media", detail=media_progress_detail(media) or "Complete")
+    return media
+
+
+def normal_sync_with_collection(col: Collection, args: dict) -> dict:
+    auth = sync_auth(args)
+    emit_progress("Syncing collection")
+    stop_progress = threading.Event()
+
+    def report_normal_sync_progress() -> None:
+        try:
+            progress = col.latest_progress()
+        except Exception:
+            return
+        if not progress.HasField("normal_sync"):
+            return
+        normal = progress.normal_sync
+        stage = clean_progress_text(normal.stage) or "Syncing collection"
+        detail = " · ".join(
+            text
+            for text in (
+                clean_progress_text(normal.added),
+                clean_progress_text(normal.removed),
+            )
+            if text
+        )
+        emit_progress(stage, detail=detail)
+
+    def monitor_normal_sync() -> None:
+        while not stop_progress.wait(0.1):
+            report_normal_sync_progress()
+
+    monitor = threading.Thread(target=monitor_normal_sync, daemon=True)
+    monitor.start()
+    try:
+        output = col.sync_collection(auth, False)
+    finally:
+        stop_progress.set()
+        monitor.join()
+        report_normal_sync_progress()
+
+    required = {
+        output.NO_CHANGES: "no_changes",
+        output.NORMAL_SYNC: "normal_sync",
+        output.FULL_SYNC: "full_sync",
+        output.FULL_DOWNLOAD: "full_download",
+        output.FULL_UPLOAD: "full_upload",
+    }.get(output.required, f"unknown_{output.required}")
+    media = None
+    if output.required == output.NO_CHANGES:
+        if output.new_endpoint:
+            auth.endpoint = output.new_endpoint
+        media = media_sync_with_collection(col, auth)
+    return {
+        "required": required,
+        "server_message": output.server_message,
+        "new_endpoint": output.new_endpoint,
+        "media": media,
+    }
+
+
 def run_action(col: Collection, action: str, args: dict):
     if action == "health":
         return {"anki_version": version("anki"), "cards": int(col.card_count())}
@@ -649,28 +726,9 @@ def run_action(col: Collection, action: str, args: dict):
     if action == "stats":
         return stats(col)
     if action == "normal_sync":
-        auth = sync_auth(args)
-        output = col.sync_collection(auth, False)
-        required = {
-            output.NO_CHANGES: "no_changes",
-            output.NORMAL_SYNC: "normal_sync",
-            output.FULL_SYNC: "full_sync",
-            output.FULL_DOWNLOAD: "full_download",
-            output.FULL_UPLOAD: "full_upload",
-        }.get(output.required, f"unknown_{output.required}")
-        media = None
-        if output.required == output.NO_CHANGES:
-            col.sync_media(auth)
-            media = wait_for_media(col)
-        return {
-            "required": required,
-            "server_message": output.server_message,
-            "new_endpoint": output.new_endpoint,
-            "media": media,
-        }
+        return normal_sync_with_collection(col, args)
     if action == "media_sync":
-        col.sync_media(sync_auth(args))
-        return wait_for_media(col)
+        return media_sync_with_collection(col, sync_auth(args))
     raise ValueError(f"unknown action: {action}")
 
 

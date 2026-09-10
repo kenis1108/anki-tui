@@ -111,6 +111,9 @@ pub struct App {
     sync_progress: Option<crate::anki_backend::BackendProgress>,
     sync_task: Option<sync::SyncTask>,
     quit_after_sync: bool,
+    exit_sync_drawn: bool,
+    exit_sync_complete: bool,
+    exit_sync_started_at: Option<Instant>,
     exit_sync_error: Option<String>,
     pub media: MediaSession,
     /// Where EditNote should return (Browse or Study).
@@ -165,6 +168,9 @@ impl App {
             sync_progress: None,
             sync_task: None,
             quit_after_sync: false,
+            exit_sync_drawn: false,
+            exit_sync_complete: false,
+            exit_sync_started_at: None,
             exit_sync_error: None,
             media: MediaSession::new(),
             edit_return: Screen::Browse,
@@ -424,6 +430,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     if app.modal != Modal::None {
         draw_modal(frame, area, app);
+    }
+    if app.quit_after_sync {
+        sync::draw_exit_progress(frame, area, app.sync_progress.as_ref());
+        app.exit_sync_drawn = true;
     }
 }
 

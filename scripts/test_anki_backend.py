@@ -136,6 +136,66 @@ class FullSyncTests(unittest.TestCase):
             ],
         )
 
+    def test_normal_sync_reports_collection_and_media_progress(self):
+        progress_events = []
+        sync_output = SimpleNamespace(
+            required=0,
+            NO_CHANGES=0,
+            NORMAL_SYNC=1,
+            FULL_SYNC=2,
+            FULL_DOWNLOAD=3,
+            FULL_UPLOAD=4,
+            server_message="",
+            new_endpoint="https://sync.example.test/",
+        )
+
+        class Collection:
+            def sync_collection(self, auth, sync_media):
+                self.auth = auth
+                self.sync_media_during_collection = sync_media
+                return sync_output
+
+            def latest_progress(self):
+                return SimpleNamespace(
+                    HasField=lambda name: name == "normal_sync",
+                    normal_sync=SimpleNamespace(
+                        stage="Uploading changes", added="Added 2", removed="Removed 1"
+                    ),
+                )
+
+            def sync_media(self, auth):
+                self.media_auth = auth
+
+            def media_sync_status(self):
+                return SimpleNamespace(active=False, HasField=lambda _name: False)
+
+        collection = Collection()
+        with (
+            patch.object(
+                anki_backend,
+                "sync_auth",
+                return_value=SimpleNamespace(endpoint=""),
+            ),
+            patch.object(
+                anki_backend,
+                "emit_progress",
+                side_effect=lambda stage, **kwargs: progress_events.append(
+                    (stage, kwargs.get("detail", ""))
+                ),
+            ),
+        ):
+            result = anki_backend.normal_sync_with_collection(collection, {})
+
+        self.assertEqual(result["required"], "no_changes")
+        self.assertFalse(collection.sync_media_during_collection)
+        self.assertEqual(collection.media_auth.endpoint, sync_output.new_endpoint)
+        self.assertIn(("Syncing collection", ""), progress_events)
+        self.assertIn(
+            ("Uploading changes", "Added 2 · Removed 1"), progress_events
+        )
+        self.assertIn(("Starting media sync", ""), progress_events)
+        self.assertIn(("Syncing media", "Complete"), progress_events)
+
 
 if __name__ == "__main__":
     unittest.main()

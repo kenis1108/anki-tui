@@ -4,11 +4,12 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Gauge, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Gauge, Paragraph, Wrap},
     Frame,
 };
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 use tui_input::Input;
 
 use super::common::{draw_input_field, draw_input_field_secret, input_from_key};
@@ -162,7 +163,9 @@ fn run_job(job: SyncJob, sender: &mpsc::Sender<SyncTaskMessage>) -> Result<SyncO
         SyncJob::Login { user, pass } => {
             crate::sync::login(&user, &pass, None)?;
             if crate::sync::paths::official_ready() {
-                match crate::sync::normal_sync() {
+                match crate::sync::normal_sync(|progress| {
+                    let _ = sender.send(SyncTaskMessage::Progress(progress));
+                }) {
                     Ok(result) => Ok(SyncOutcome {
                         message: format!("Signed in · {}", result.message),
                         refresh_decks: true,
@@ -203,7 +206,9 @@ fn run_job(job: SyncJob, sender: &mpsc::Sender<SyncTaskMessage>) -> Result<SyncO
             })
         }
         SyncJob::Incremental => {
-            let result = crate::sync::normal_sync()?;
+            let result = crate::sync::normal_sync(|progress| {
+                let _ = sender.send(SyncTaskMessage::Progress(progress));
+            })?;
             Ok(SyncOutcome {
                 message: result.message,
                 refresh_decks: true,
@@ -211,7 +216,9 @@ fn run_job(job: SyncJob, sender: &mpsc::Sender<SyncTaskMessage>) -> Result<SyncO
             })
         }
         SyncJob::Media => {
-            let result = crate::sync::media_only_sync()?;
+            let result = crate::sync::media_only_sync(|progress| {
+                let _ = sender.send(SyncTaskMessage::Progress(progress));
+            })?;
             Ok(SyncOutcome {
                 message: result.message,
                 refresh_decks: false,
@@ -243,6 +250,9 @@ pub(super) fn request_quit(app: &mut App) {
     }
 
     app.quit_after_sync = true;
+    app.exit_sync_drawn = false;
+    app.exit_sync_complete = false;
+    app.exit_sync_started_at = Some(Instant::now());
     if app.sync_task.is_some() {
         app.status = "Finishing AnkiWeb sync before exit…".into();
         return;
@@ -264,6 +274,17 @@ pub(super) fn request_quit(app: &mut App) {
 }
 
 pub(super) fn poll(app: &mut App) -> Result<()> {
+    if app.quit_after_sync
+        && app.exit_sync_complete
+        && app.exit_sync_drawn
+        && app
+            .exit_sync_started_at
+            .is_some_and(|started| started.elapsed() >= Duration::from_millis(600))
+    {
+        app.should_quit = true;
+        return Ok(());
+    }
+
     let mut received = None;
     let mut latest_progress = None;
     if let Some(task) = app.sync_task.as_ref() {
@@ -295,7 +316,9 @@ pub(super) fn poll(app: &mut App) -> Result<()> {
         let _ = handle.join();
     }
     app.sync_busy = false;
-    app.sync_progress = None;
+    if !app.quit_after_sync {
+        app.sync_progress = None;
+    }
 
     match result {
         Ok(outcome) => {
@@ -311,6 +334,14 @@ pub(super) fn poll(app: &mut App) -> Result<()> {
                 app.exit_sync_error =
                     Some(format!("Automatic exit sync incomplete: {}", app.sync_log));
             }
+            if app.quit_after_sync {
+                app.sync_progress = Some(crate::anki_backend::BackendProgress {
+                    stage: "AnkiWeb sync complete".into(),
+                    current: 0,
+                    total: None,
+                    detail: app.sync_log.clone(),
+                });
+            }
         }
         Err(error) => {
             let message = format!("{} failed: {error}", job_name(task.kind));
@@ -318,6 +349,12 @@ pub(super) fn poll(app: &mut App) -> Result<()> {
             app.status = message.clone();
             if app.quit_after_sync {
                 app.exit_sync_error = Some(message);
+                app.sync_progress = Some(crate::anki_backend::BackendProgress {
+                    stage: "AnkiWeb sync failed".into(),
+                    current: 0,
+                    total: None,
+                    detail: "Closing anki-tui".into(),
+                });
             }
         }
     }
@@ -327,7 +364,7 @@ pub(super) fn poll(app: &mut App) -> Result<()> {
             start_job(app, SyncJob::Incremental);
             app.status = "Syncing collection before exit…".into();
         } else {
-            app.should_quit = true;
+            app.exit_sync_complete = true;
         }
     }
     Ok(())
@@ -491,6 +528,45 @@ fn draw_progress(
     }
 }
 
+pub(super) fn draw_exit_progress(
+    frame: &mut Frame,
+    area: Rect,
+    progress: Option<&crate::anki_backend::BackendProgress>,
+) {
+    let width = area.width.saturating_sub(4).clamp(1, 78);
+    let height = area.height.saturating_sub(2).clamp(1, 7);
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    frame.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Syncing before exit ")
+        .border_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    if inner.is_empty() {
+        return;
+    }
+
+    let chunks = Layout::vertical([Constraint::Length(inner.height.min(3)), Constraint::Min(0)])
+        .areas::<2>(inner);
+    draw_progress(frame, chunks[0], progress);
+    if !chunks[1].is_empty() {
+        frame.render_widget(
+            Paragraph::new("Please wait while collection and media changes are saved to AnkiWeb.")
+                .alignment(ratatui::layout::Alignment::Center)
+                .style(Style::default().fg(Color::DarkGray))
+                .wrap(Wrap { trim: true }),
+            chunks[1],
+        );
+    }
+}
+
 fn progress_summary(progress: &crate::anki_backend::BackendProgress) -> String {
     if let Some(total) = progress.total.filter(|total| *total > 0) {
         let current = progress.current.min(total);
@@ -576,5 +652,32 @@ mod tests {
             progress_summary(&progress),
             "Syncing media · Added 3 · Checked 12"
         );
+    }
+
+    #[test]
+    fn renders_exit_sync_progress_overlay() {
+        let backend = TestBackend::new(90, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let progress = crate::anki_backend::BackendProgress {
+            stage: "Uploading changes".into(),
+            current: 0,
+            total: None,
+            detail: "Added 2 · Removed 1".into(),
+        };
+
+        terminal
+            .draw(|frame| draw_exit_progress(frame, frame.area(), Some(&progress)))
+            .unwrap();
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+
+        assert!(rendered.contains("Syncing before exit"));
+        assert!(rendered.contains("Uploading changes · Added 2 · Removed 1"));
+        assert!(rendered.contains("Please wait while collection and media changes"));
     }
 }

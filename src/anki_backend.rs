@@ -324,8 +324,11 @@ fn auth_args(auth: &crate::sync::Auth) -> Value {
     json!({ "hkey": auth.hkey, "endpoint": auth.endpoint })
 }
 
-pub fn normal_sync(auth: &crate::sync::Auth) -> Result<OfficialSyncOutput> {
-    call("normal_sync", auth_args(auth))
+pub fn normal_sync(
+    auth: &crate::sync::Auth,
+    on_progress: impl FnMut(BackendProgress),
+) -> Result<OfficialSyncOutput> {
+    call_with_progress("normal_sync", auth_args(auth), on_progress)
 }
 
 pub fn full_download(
@@ -342,8 +345,11 @@ pub fn full_upload(
     call_with_progress("full_upload", auth_args(auth), on_progress)
 }
 
-pub fn media_sync(auth: &crate::sync::Auth) -> Result<MediaProgress> {
-    call("media_sync", auth_args(auth))
+pub fn media_sync(
+    auth: &crate::sync::Auth,
+    on_progress: impl FnMut(BackendProgress),
+) -> Result<MediaProgress> {
+    call_with_progress("media_sync", auth_args(auth), on_progress)
 }
 
 #[cfg(test)]

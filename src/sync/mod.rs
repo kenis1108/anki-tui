@@ -92,10 +92,12 @@ pub fn full_upload(
 }
 
 /// Bidirectional sync using the same backend and collection format as Anki Desktop.
-pub fn normal_sync() -> Result<SyncResult> {
+pub fn normal_sync(
+    on_progress: impl FnMut(crate::anki_backend::BackendProgress),
+) -> Result<SyncResult> {
     require_official_collection()?;
     let mut auth = require_auth()?;
-    let output = crate::anki_backend::normal_sync(&auth)?;
+    let output = crate::anki_backend::normal_sync(&auth, on_progress)?;
     save_new_endpoint(&mut auth, &output.new_endpoint)?;
 
     let (message, requires_user_action) = match output.required.as_str() {
@@ -139,10 +141,12 @@ pub fn normal_sync() -> Result<SyncResult> {
     })
 }
 
-pub fn media_only_sync() -> Result<SyncResult> {
+pub fn media_only_sync(
+    on_progress: impl FnMut(crate::anki_backend::BackendProgress),
+) -> Result<SyncResult> {
     require_official_collection()?;
     let auth = require_auth()?;
-    let media = crate::anki_backend::media_sync(&auth)?;
+    let media = crate::anki_backend::media_sync(&auth, on_progress)?;
     Ok(SyncResult {
         message: format!("Official media sync complete{}", format_media(&media)),
         requires_user_action: false,

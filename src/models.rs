@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use rs_fsrs::{Card as FsrsCard, State as FsrsState};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Deck {
     pub id: i64,
     pub name: String,
@@ -11,7 +11,7 @@ pub struct Deck {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeckCounts {
     pub deck_id: i64,
     pub name: String,
@@ -19,6 +19,8 @@ pub struct DeckCounts {
     pub learning: i64,
     pub review: i64,
     pub total: i64,
+    #[serde(default)]
+    pub level: usize,
 }
 
 impl DeckCounts {
@@ -27,18 +29,8 @@ impl DeckCounts {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Note {
-    pub id: i64,
-    pub deck_id: i64,
-    pub front: String,
-    pub back: String,
-    pub tags: String,
-    pub created_at: DateTime<Utc>,
-    pub modified_at: DateTime<Utc>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 #[repr(i32)]
 pub enum CardState {
     New = 0,
@@ -89,7 +81,7 @@ impl CardState {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)]
 pub struct Card {
     pub id: i64,
@@ -136,7 +128,7 @@ impl Card {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)]
 pub struct StudyCard {
     pub card: Card,
@@ -144,9 +136,66 @@ pub struct StudyCard {
     pub back: String,
     pub tags: String,
     pub deck_name: String,
+    #[serde(default)]
+    pub answer_intervals: Vec<String>,
+    #[serde(default)]
+    pub answer_includes_question: bool,
+    #[serde(default)]
+    pub front_document: Option<CardDocument>,
+    #[serde(default)]
+    pub back_document: Option<CardDocument>,
+    #[serde(default)]
+    pub scheduling_states_hex: String,
+    #[serde(default)]
+    pub fields: Vec<NoteField>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CardDocument {
+    #[serde(default)]
+    pub background: String,
+    #[serde(default)]
+    pub blocks: Vec<CardBlock>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CardBlock {
+    Text {
+        #[serde(default)]
+        runs: Vec<CardTextRun>,
+        #[serde(default)]
+        alignment: String,
+        #[serde(default)]
+        background: String,
+    },
+    Separator,
+    Image {
+        source: String,
+    },
+    Audio {
+        #[serde(default)]
+        sources: Vec<String>,
+    },
+    Spacer,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CardTextRun {
+    pub text: String,
+    #[serde(default)]
+    pub color: String,
+    #[serde(default)]
+    pub bold: bool,
+    #[serde(default)]
+    pub italic: bool,
+    #[serde(default)]
+    pub underline: bool,
+    #[serde(default)]
+    pub crossed_out: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)]
 pub struct BrowseRow {
     pub card_id: i64,
@@ -160,9 +209,13 @@ pub struct BrowseRow {
     pub reps: i32,
     pub lapses: i32,
     pub suspended: bool,
+    #[serde(default)]
+    pub due_label: String,
+    #[serde(default)]
+    pub fields: Vec<NoteField>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StatsSummary {
     pub total_cards: i64,
     pub total_notes: i64,
@@ -178,8 +231,14 @@ pub struct StatsSummary {
     pub mature_cards: i64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeckOptions {
     pub new_per_day: i64,
     pub rev_per_day: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NoteField {
+    pub name: String,
+    pub value: String,
 }

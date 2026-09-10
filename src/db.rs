@@ -5,39 +5,20 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::models::{
-    BrowseRow, Card, CardState, Deck, DeckCounts, DeckOptions, Note, StatsSummary, StudyCard,
+    BrowseRow, Card, CardState, Deck, DeckCounts, DeckOptions, NoteField, StatsSummary, StudyCard,
 };
-use crate::sync::ImportedNote;
 
 pub struct Store {
     conn: Connection,
-}
-
-#[derive(Debug, Clone)]
-pub struct ExportDeck {
-    pub id: i64,
-    pub name: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct ExportNote {
-    pub id: i64,
-    pub deck_id: i64,
-    pub front: String,
-    pub back: String,
-    pub tags: String,
-    pub state: CardState,
-    pub due: DateTime<Utc>,
-    pub scheduled_days: i64,
-    pub reps: i32,
-    pub lapses: i32,
-    pub suspended: bool,
+    allow_official: bool,
 }
 
 impl Store {
     pub fn open_default() -> Result<Self> {
         let path = default_db_path()?;
-        Self::open(&path)
+        let mut store = Self::open(&path)?;
+        store.allow_official = true;
+        Ok(store)
     }
 
     pub fn open(path: &std::path::Path) -> Result<Self> {
@@ -52,7 +33,10 @@ impl Store {
             PRAGMA journal_mode = WAL;
             ",
         )?;
-        let store = Self { conn };
+        let store = Self {
+            conn,
+            allow_official: false,
+        };
         store.migrate()?;
         Ok(store)
     }
@@ -129,6 +113,9 @@ impl Store {
     }
 
     pub fn list_deck_counts(&self) -> Result<Vec<DeckCounts>> {
+        if self.uses_official_backend() {
+            return crate::anki_backend::list_deck_counts();
+        }
         let now = Utc::now().to_rfc3339();
         let mut stmt = self.conn.prepare(
             "
@@ -154,6 +141,7 @@ impl Store {
                 learning: row.get(3)?,
                 review: row.get(4)?,
                 total: row.get(5)?,
+                level: 0,
             })
         })?;
 
@@ -161,6 +149,9 @@ impl Store {
     }
 
     pub fn get_deck(&self, id: i64) -> Result<Option<Deck>> {
+        if self.uses_official_backend() {
+            return crate::anki_backend::get_deck(id);
+        }
         self.conn
             .query_row(
                 "SELECT id, name, new_per_day, rev_per_day, created_at FROM decks WHERE id = ?1",
@@ -180,6 +171,9 @@ impl Store {
     }
 
     pub fn create_deck(&self, name: &str) -> Result<i64> {
+        if self.uses_official_backend() {
+            return crate::anki_backend::create_deck(name);
+        }
         let now = Utc::now().to_rfc3339();
         self.conn.execute(
             "INSERT INTO decks (name, created_at) VALUES (?1, ?2)",
@@ -189,6 +183,9 @@ impl Store {
     }
 
     pub fn rename_deck(&self, id: i64, name: &str) -> Result<()> {
+        if self.uses_official_backend() {
+            return crate::anki_backend::rename_deck(id, name);
+        }
         self.conn.execute(
             "UPDATE decks SET name = ?1 WHERE id = ?2",
             params![name.trim(), id],
@@ -197,6 +194,9 @@ impl Store {
     }
 
     pub fn delete_deck(&self, id: i64) -> Result<()> {
+        if self.uses_official_backend() {
+            return crate::anki_backend::delete_deck(id);
+        }
         let count: i64 = self
             .conn
             .query_row("SELECT COUNT(*) FROM decks", [], |r| r.get(0))?;
@@ -207,6 +207,9 @@ impl Store {
     }
 
     pub fn update_deck_options(&self, id: i64, opts: &DeckOptions) -> Result<()> {
+        if self.uses_official_backend() {
+            return crate::anki_backend::update_deck_options(id, opts);
+        }
         self.conn.execute(
             "UPDATE decks SET new_per_day = ?1, rev_per_day = ?2 WHERE id = ?3",
             params![opts.new_per_day, opts.rev_per_day, id],
@@ -215,6 +218,9 @@ impl Store {
     }
 
     pub fn add_note(&self, deck_id: i64, front: &str, back: &str, tags: &str) -> Result<i64> {
+        if self.uses_official_backend() {
+            return crate::anki_backend::add_note(deck_id, front, back, tags);
+        }
         let now = Utc::now();
         let tx = self.conn.unchecked_transaction()?;
         tx.execute(
@@ -256,6 +262,9 @@ impl Store {
     }
 
     pub fn update_note(&self, note_id: i64, front: &str, back: &str, tags: &str) -> Result<()> {
+        if self.uses_official_backend() {
+            anyhow::bail!("official Anki notes must be updated with their complete field list");
+        }
         let now = Utc::now().to_rfc3339();
         self.conn.execute(
             "UPDATE notes SET front = ?1, back = ?2, tags = ?3, modified_at = ?4 WHERE id = ?5",
@@ -264,25 +273,19 @@ impl Store {
         Ok(())
     }
 
-    pub fn get_note(&self, note_id: i64) -> Result<Option<Note>> {
-        self.conn
-            .query_row(
-                "SELECT id, deck_id, front, back, tags, created_at, modified_at FROM notes WHERE id = ?1",
-                params![note_id],
-                |row| {
-                    Ok(Note {
-                        id: row.get(0)?,
-                        deck_id: row.get(1)?,
-                        front: row.get(2)?,
-                        back: row.get(3)?,
-                        tags: row.get(4)?,
-                        created_at: parse_dt(&row.get::<_, String>(5)?)?,
-                        modified_at: parse_dt(&row.get::<_, String>(6)?)?,
-                    })
-                },
-            )
-            .optional()
-            .map_err(Into::into)
+    pub fn update_note_fields(&self, note_id: i64, fields: &[NoteField], tags: &str) -> Result<()> {
+        if self.uses_official_backend() {
+            return crate::anki_backend::update_note(note_id, fields, tags);
+        }
+        let front = fields
+            .first()
+            .map(|field| field.value.as_str())
+            .unwrap_or("");
+        let back = fields
+            .get(1)
+            .map(|field| field.value.as_str())
+            .unwrap_or("");
+        self.update_note(note_id, front, back, tags)
     }
 
     pub fn delete_note(&self, note_id: i64) -> Result<()> {
@@ -292,6 +295,9 @@ impl Store {
     }
 
     pub fn set_card_suspended(&self, card_id: i64, suspended: bool) -> Result<()> {
+        if self.uses_official_backend() {
+            return crate::anki_backend::set_card_suspended(card_id, suspended);
+        }
         self.conn.execute(
             "UPDATE cards SET suspended = ?1 WHERE id = ?2",
             params![suspended as i32, card_id],
@@ -301,6 +307,9 @@ impl Store {
 
     /// Anki Cards → Reset (Forget): turn card back into New; review log kept but ignored.
     pub fn forget_card(&self, card_id: i64) -> Result<()> {
+        if self.uses_official_backend() {
+            return crate::anki_backend::forget_card(card_id);
+        }
         let fsrs = rs_fsrs::Card::new();
         self.conn.execute(
             "UPDATE cards SET
@@ -325,6 +334,9 @@ impl Store {
 
     /// Reset all cards in a deck to New (same as selecting all in browser → Reset).
     pub fn forget_deck(&self, deck_id: i64) -> Result<usize> {
+        if self.uses_official_backend() {
+            return crate::anki_backend::forget_deck(deck_id);
+        }
         let fsrs = rs_fsrs::Card::new();
         let n = self.conn.execute(
             "UPDATE cards SET
@@ -348,6 +360,9 @@ impl Store {
     }
 
     pub fn delete_card(&self, card_id: i64) -> Result<()> {
+        if self.uses_official_backend() {
+            return crate::anki_backend::delete_card(card_id);
+        }
         let note_id: i64 = self.conn.query_row(
             "SELECT note_id FROM cards WHERE id = ?1",
             params![card_id],
@@ -367,7 +382,8 @@ impl Store {
         Ok(())
     }
 
-    pub fn get_card(&self, card_id: i64) -> Result<Option<Card>> {
+    #[cfg(test)]
+    fn get_card(&self, card_id: i64) -> Result<Option<Card>> {
         self.conn
             .query_row(
                 "SELECT id, note_id, deck_id, due, stability, difficulty, elapsed_days,
@@ -421,6 +437,9 @@ impl Store {
 
     /// Fetch next due cards for a deck, respecting daily new/review limits.
     pub fn next_study_queue(&self, deck_id: i64, limit: usize) -> Result<Vec<StudyCard>> {
+        if self.uses_official_backend() {
+            return crate::anki_backend::next_study_queue(deck_id, limit);
+        }
         let deck = self
             .get_deck(deck_id)?
             .with_context(|| format!("deck {deck_id} not found"))?;
@@ -532,6 +551,21 @@ impl Store {
                 back: row.get(15)?,
                 tags: row.get(16)?,
                 deck_name: row.get(17)?,
+                answer_intervals: Vec::new(),
+                answer_includes_question: false,
+                front_document: None,
+                back_document: None,
+                scheduling_states_hex: String::new(),
+                fields: vec![
+                    NoteField {
+                        name: "Front".into(),
+                        value: row.get(14)?,
+                    },
+                    NoteField {
+                        name: "Back".into(),
+                        value: row.get(15)?,
+                    },
+                ],
             })
         })?;
         for row in rows {
@@ -541,6 +575,9 @@ impl Store {
     }
 
     pub fn browse(&self, query: &str, limit: i64) -> Result<Vec<BrowseRow>> {
+        if self.uses_official_backend() {
+            return crate::anki_backend::browse(query, limit);
+        }
         let q = query.trim();
         let like = format!("%{}%", q);
         let sql = if q.is_empty() {
@@ -581,6 +618,17 @@ impl Store {
                 reps: row.get(8)?,
                 lapses: row.get(9)?,
                 suspended: row.get::<_, i32>(10)? != 0,
+                due_label: String::new(),
+                fields: vec![
+                    NoteField {
+                        name: "Front".into(),
+                        value: row.get(3)?,
+                    },
+                    NoteField {
+                        name: "Back".into(),
+                        value: row.get(4)?,
+                    },
+                ],
             })
         };
 
@@ -592,180 +640,76 @@ impl Store {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
-    pub fn list_decks_for_export(&self) -> Result<Vec<ExportDeck>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id, name FROM decks ORDER BY name COLLATE NOCASE")?;
-        let rows = stmt.query_map([], |r| {
-            Ok(ExportDeck {
-                id: r.get(0)?,
-                name: r.get(1)?,
-            })
-        })?;
-        Ok(rows.collect::<Result<Vec<_>, _>>()?)
-    }
-
-    pub fn list_notes_for_export(&self) -> Result<Vec<ExportNote>> {
-        let mut stmt = self.conn.prepare(
-            "
-            SELECT n.id, n.deck_id, n.front, n.back, n.tags,
-                   c.state, c.due, c.scheduled_days, c.reps, c.lapses, c.suspended
-            FROM notes n
-            JOIN cards c ON c.note_id = n.id
-            ORDER BY n.id
-            ",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            Ok(ExportNote {
-                id: row.get(0)?,
-                deck_id: row.get(1)?,
-                front: row.get(2)?,
-                back: row.get(3)?,
-                tags: row.get(4)?,
-                state: CardState::from_i32(row.get(5)?),
-                due: parse_dt(&row.get::<_, String>(6)?)?,
-                scheduled_days: row.get(7)?,
-                reps: row.get(8)?,
-                lapses: row.get(9)?,
-                suspended: row.get::<_, i32>(10)? != 0,
-            })
-        })?;
-        Ok(rows.collect::<Result<Vec<_>, _>>()?)
-    }
-
-    pub fn replace_with_imported(&self, notes: &[ImportedNote]) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
-        tx.execute_batch(
-            "
-            DELETE FROM revlog;
-            DELETE FROM cards;
-            DELETE FROM notes;
-            DELETE FROM decks;
-            ",
-        )?;
-
-        let mut deck_ids: std::collections::HashMap<String, i64> =
-            std::collections::HashMap::new();
-        let now = Utc::now().to_rfc3339();
-
-        if notes.is_empty() {
-            tx.execute(
-                "INSERT INTO decks (name, created_at) VALUES ('Default', ?1)",
-                params![now],
-            )?;
-        } else {
-            for note in notes {
-                if !deck_ids.contains_key(&note.deck_name) {
-                    tx.execute(
-                        "INSERT INTO decks (name, created_at) VALUES (?1, ?2)",
-                        params![note.deck_name, now],
-                    )?;
-                    deck_ids.insert(note.deck_name.clone(), tx.last_insert_rowid());
-                }
-                let deck_id = deck_ids[&note.deck_name];
-                tx.execute(
-                    "INSERT INTO notes (deck_id, front, back, tags, created_at, modified_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    params![
-                        deck_id,
-                        note.front,
-                        note.back,
-                        note.tags,
-                        now,
-                        now
-                    ],
-                )?;
-                let note_id = tx.last_insert_rowid();
-                let fsrs = rs_fsrs::Card::new();
-                tx.execute(
-                    "INSERT INTO cards (
-                        note_id, deck_id, due, stability, difficulty, elapsed_days, scheduled_days,
-                        reps, lapses, state, last_review, suspended, created_at
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, ?12)",
-                    params![
-                        note_id,
-                        deck_id,
-                        fsrs.due.to_rfc3339(),
-                        fsrs.stability,
-                        fsrs.difficulty,
-                        fsrs.elapsed_days,
-                        fsrs.scheduled_days,
-                        fsrs.reps,
-                        fsrs.lapses,
-                        CardState::from(fsrs.state) as i32,
-                        fsrs.last_review.to_rfc3339(),
-                        now,
-                    ],
-                )?;
-            }
-        }
-
-        tx.commit()?;
-        Ok(())
-    }
-
     pub fn stats(&self) -> Result<StatsSummary> {
-        let mut s = StatsSummary::default();
-        s.total_decks = self
-            .conn
-            .query_row("SELECT COUNT(*) FROM decks", [], |r| r.get(0))?;
-        s.total_notes = self
-            .conn
-            .query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0))?;
-        s.total_cards = self
-            .conn
-            .query_row("SELECT COUNT(*) FROM cards", [], |r| r.get(0))?;
-        s.new_cards = self.conn.query_row(
-            "SELECT COUNT(*) FROM cards WHERE suspended = 0 AND state = 0",
-            [],
-            |r| r.get(0),
-        )?;
-        s.learning_cards = self.conn.query_row(
-            "SELECT COUNT(*) FROM cards WHERE suspended = 0 AND state = 1",
-            [],
-            |r| r.get(0),
-        )?;
-        s.review_cards = self.conn.query_row(
-            "SELECT COUNT(*) FROM cards WHERE suspended = 0 AND state = 2",
-            [],
-            |r| r.get(0),
-        )?;
-        s.relearning_cards = self.conn.query_row(
-            "SELECT COUNT(*) FROM cards WHERE suspended = 0 AND state = 3",
-            [],
-            |r| r.get(0),
-        )?;
-        s.suspended_cards = self.conn.query_row(
-            "SELECT COUNT(*) FROM cards WHERE suspended = 1",
-            [],
-            |r| r.get(0),
-        )?;
-        s.mature_cards = self.conn.query_row(
-            "SELECT COUNT(*) FROM cards WHERE suspended = 0 AND state = 2 AND scheduled_days >= 21",
-            [],
-            |r| r.get(0),
-        )?;
-
+        if self.uses_official_backend() {
+            return crate::anki_backend::stats();
+        }
         let now = Utc::now();
         let day0 = day_start(now).to_rfc3339();
         let day7 = day_start(now - chrono::Duration::days(7)).to_rfc3339();
         let day30 = day_start(now - chrono::Duration::days(30)).to_rfc3339();
-        s.reviews_today = self.conn.query_row(
-            "SELECT COUNT(*) FROM revlog WHERE reviewed_at >= ?1",
-            params![day0],
-            |r| r.get(0),
-        )?;
-        s.reviews_7d = self.conn.query_row(
-            "SELECT COUNT(*) FROM revlog WHERE reviewed_at >= ?1",
-            params![day7],
-            |r| r.get(0),
-        )?;
-        s.reviews_30d = self.conn.query_row(
-            "SELECT COUNT(*) FROM revlog WHERE reviewed_at >= ?1",
-            params![day30],
-            |r| r.get(0),
-        )?;
-        Ok(s)
+        Ok(StatsSummary {
+            total_decks: self
+                .conn
+                .query_row("SELECT COUNT(*) FROM decks", [], |row| row.get(0))?,
+            total_notes: self
+                .conn
+                .query_row("SELECT COUNT(*) FROM notes", [], |row| row.get(0))?,
+            total_cards: self
+                .conn
+                .query_row("SELECT COUNT(*) FROM cards", [], |row| row.get(0))?,
+            new_cards: self.conn.query_row(
+                "SELECT COUNT(*) FROM cards WHERE suspended = 0 AND state = 0",
+                [],
+                |row| row.get(0),
+            )?,
+            learning_cards: self.conn.query_row(
+                "SELECT COUNT(*) FROM cards WHERE suspended = 0 AND state = 1",
+                [],
+                |row| row.get(0),
+            )?,
+            review_cards: self.conn.query_row(
+                "SELECT COUNT(*) FROM cards WHERE suspended = 0 AND state = 2",
+                [],
+                |row| row.get(0),
+            )?,
+            relearning_cards: self.conn.query_row(
+                "SELECT COUNT(*) FROM cards WHERE suspended = 0 AND state = 3",
+                [],
+                |row| row.get(0),
+            )?,
+            suspended_cards: self.conn.query_row(
+                "SELECT COUNT(*) FROM cards WHERE suspended = 1",
+                [],
+                |row| row.get(0),
+            )?,
+            mature_cards: self.conn.query_row(
+                "SELECT COUNT(*) FROM cards WHERE suspended = 0 AND state = 2 AND scheduled_days >= 21",
+                [],
+                |row| row.get(0),
+            )?,
+            reviews_today: self.conn.query_row(
+                "SELECT COUNT(*) FROM revlog WHERE reviewed_at >= ?1",
+                params![day0],
+                |row| row.get(0),
+            )?,
+            reviews_7d: self.conn.query_row(
+                "SELECT COUNT(*) FROM revlog WHERE reviewed_at >= ?1",
+                params![day7],
+                |row| row.get(0),
+            )?,
+            reviews_30d: self.conn.query_row(
+                "SELECT COUNT(*) FROM revlog WHERE reviewed_at >= ?1",
+                params![day30],
+                |row| row.get(0),
+            )?,
+        })
+    }
+
+    pub fn uses_official_backend(&self) -> bool {
+        self.allow_official
+            && crate::sync::paths::official_ready()
+            && crate::anki_backend::available()
     }
 }
 
@@ -799,7 +743,9 @@ fn parse_dt(s: &str) -> Result<DateTime<Utc>, rusqlite::Error> {
                 .or_else(|_| NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S"))
                 .map(|n| DateTime::<Utc>::from_naive_utc_and_offset(n, Utc))
         })
-        .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e)))
+        .map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
+        })
 }
 
 fn map_card(row: &rusqlite::Row<'_>) -> Result<Card, rusqlite::Error> {
@@ -845,21 +791,32 @@ mod tests {
     }
 
     #[test]
-    fn export_and_reimport_roundtrip() {
+    fn update_complete_note_fields() {
         let store = Store::open(std::path::Path::new(":memory:")).unwrap();
         let decks = store.list_deck_counts().unwrap();
         let deck_id = decks[0].deck_id;
-        store
+        let note_id = store
             .add_note(deck_id, "Hello?", "World!", "greetings")
             .unwrap();
-        let bytes = crate::sync::export_collection_bytes(&store).unwrap();
-        assert!(bytes.len() > 100);
-
-        let store2 = Store::open(std::path::Path::new(":memory:")).unwrap();
-        let stats = crate::sync::import_anki_collection_bytes(&store2, &bytes).unwrap();
-        assert_eq!(stats.notes, 1);
-        let rows = store2.browse("", 10).unwrap();
-        assert_eq!(rows[0].front, "Hello?");
-        assert_eq!(rows[0].back, "World!");
+        store
+            .update_note_fields(
+                note_id,
+                &[
+                    NoteField {
+                        name: "Front".into(),
+                        value: "Updated?".into(),
+                    },
+                    NoteField {
+                        name: "Back".into(),
+                        value: "Still here!".into(),
+                    },
+                ],
+                "safe",
+            )
+            .unwrap();
+        let rows = store.browse("", 10).unwrap();
+        assert_eq!(rows[0].front, "Updated?");
+        assert_eq!(rows[0].back, "Still here!");
+        assert_eq!(rows[0].tags, "safe");
     }
 }

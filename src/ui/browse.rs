@@ -1,3 +1,5 @@
+use super::common::{draw_input_field, input_from_key, truncate};
+use super::{App, Screen};
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
@@ -7,8 +9,6 @@ use ratatui::{
     widgets::{Block, Borders, Cell, Row, Table, TableState},
     Frame,
 };
-use super::common::{draw_input_field, input_from_key, truncate};
-use super::{App, Screen};
 
 pub fn reload(app: &mut App) -> Result<()> {
     app.browse_rows = app.store.browse(app.browse_query.value(), 500)?;
@@ -61,14 +61,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Enter => {
             if let Some(row) = app.browse_rows.get(app.browse_selected).cloned() {
-                super::edit::open_from_browse(
-                    app,
-                    row.note_id,
-                    row.card_id,
-                    row.front,
-                    row.back,
-                    row.tags,
-                );
+                super::edit::open_from_browse(app, row);
             }
         }
         KeyCode::Char('s') => {
@@ -136,7 +129,11 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
             Cell::from(truncate(&r.front, 28)),
             Cell::from(truncate(&r.back, 28)),
             Cell::from(r.state.as_str()),
-            Cell::from(r.due.format("%Y-%m-%d").to_string()),
+            Cell::from(if r.due_label.is_empty() {
+                r.due.format("%Y-%m-%d").to_string()
+            } else {
+                r.due_label.clone()
+            }),
             Cell::from(flags),
         ])
         .style(style)

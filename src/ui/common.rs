@@ -42,13 +42,7 @@ pub fn input_insert_text(input: &mut Input, text: &str) {
 
 /// Draw a bordered text field and place the terminal cursor at the real
 /// `tui_input` caret (not glued to the end of the string).
-pub fn draw_input_field(
-    frame: &mut Frame,
-    area: Rect,
-    title: &str,
-    input: &Input,
-    focused: bool,
-) {
+pub fn draw_input_field(frame: &mut Frame, area: Rect, title: &str, input: &Input, focused: bool) {
     draw_input_field_ex(frame, area, title, input, focused, false);
 }
 
@@ -85,14 +79,12 @@ fn draw_input_field_ex(
         input.value().to_string()
     };
     frame.render_widget(
-        Paragraph::new(shown)
-            .scroll((0, scroll as u16))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(title)
-                    .border_style(style),
-            ),
+        Paragraph::new(shown).scroll((0, scroll as u16)).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .border_style(style),
+        ),
         area,
     );
     if focused && area.width > 2 && area.height > 2 {
@@ -267,12 +259,13 @@ pub fn help_text() -> String {
         "  Ctrl+s        save",
         "",
         "AnkiWeb Sync",
-        "  F1            login",
+        "  F1            login, then sync",
         "  F5            incremental sync + media",
         "  F6            media only",
         "  F2            full download (replace local)",
         "  F3            full upload (replace AnkiWeb)",
         "  F4            logout",
+        "  automatic     sync at startup and exit",
     ]
     .join("\n")
 }

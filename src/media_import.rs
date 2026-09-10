@@ -14,10 +14,8 @@ pub fn pick_with_yazi() -> Result<Option<PathBuf>> {
         bail!("yazi not found — install yazi to pick images (https://yazi-rs.github.io/)");
     }
 
-    let chooser = std::env::temp_dir().join(format!(
-        "anki-tui-yazi-chooser-{}.txt",
-        std::process::id()
-    ));
+    let chooser =
+        std::env::temp_dir().join(format!("anki-tui-yazi-chooser-{}.txt", std::process::id()));
     let _ = fs::remove_file(&chooser);
 
     let status = Command::new("yazi")
@@ -61,9 +59,17 @@ pub fn yazi_available() -> bool {
 
 /// Copy `src` into `collection.media/`, mark dirty for sync, return Anki media filename.
 pub fn import_media_file(src: &Path) -> Result<String> {
+    let data = fs::read(src).with_context(|| format!("read {}", src.display()))?;
+    if paths::official_ready() && crate::anki_backend::available() {
+        let filename = src
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "media.bin".into());
+        return crate::anki_backend::add_media_file(&filename, &data);
+    }
+
     let folder = paths::media_folder()?;
     let db_path = paths::media_db_path()?;
-    let data = fs::read(src).with_context(|| format!("read {}", src.display()))?;
     let csum = sha1_hex(&data);
 
     let fname = unique_media_name(src, &folder, &csum)?;

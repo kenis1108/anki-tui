@@ -7,21 +7,20 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
     Frame,
 };
+use std::time::Instant;
 use tui_input::{Input, InputRequest};
 
 use super::common::{draw_input_field, draw_multiline_input_field, input_from_key};
 use super::study;
-use super::{AddField, App, Modal, PendingExternal, Screen};
+use super::{App, Modal, PendingExternal, Screen};
 use crate::media_import;
+use crate::models::{BrowseRow, NoteField};
 
-pub fn open_from_browse(app: &mut App, note_id: i64, card_id: i64, front: String, back: String, tags: String) {
+pub fn open_from_browse(app: &mut App, row: BrowseRow) {
     app.edit_return = Screen::Browse;
-    app.edit_note_id = Some(note_id);
-    app.edit_card_id = Some(card_id);
-    app.edit_field = AddField::Front;
-    app.edit_front = Input::new(front);
-    app.edit_back = Input::new(back);
-    app.edit_tags = Input::new(tags);
+    app.edit_note_id = Some(row.note_id);
+    app.edit_card_id = Some(row.card_id);
+    set_edit_fields(app, row.fields, row.tags);
     app.screen = Screen::EditNote;
 }
 
@@ -33,10 +32,7 @@ pub fn open_from_study(app: &mut App) -> Result<()> {
     app.edit_return = Screen::Study;
     app.edit_note_id = Some(card.card.note_id);
     app.edit_card_id = Some(card.card.id);
-    app.edit_field = AddField::Front;
-    app.edit_front = Input::new(card.front);
-    app.edit_back = Input::new(card.back);
-    app.edit_tags = Input::new(card.tags);
+    set_edit_fields(app, card.fields, card.tags);
     app.screen = Screen::EditNote;
     app.status = "Editing current card".into();
     Ok(())
@@ -44,95 +40,65 @@ pub fn open_from_study(app: &mut App) -> Result<()> {
 
 pub fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
     match key.code {
-        KeyCode::Esc => {
-            return_from_edit(app, false)?;
-        }
+        KeyCode::Esc => return_from_edit(app, false)?,
         KeyCode::Tab => {
-            app.edit_field = match app.edit_field {
-                AddField::Front => AddField::Back,
-                AddField::Back => AddField::Tags,
-                AddField::Tags => AddField::Front,
-            };
+            app.edit_focus = (app.edit_focus + 1) % (app.edit_fields.len() + 1);
         }
         KeyCode::BackTab => {
-            app.edit_field = match app.edit_field {
-                AddField::Front => AddField::Tags,
-                AddField::Back => AddField::Front,
-                AddField::Tags => AddField::Back,
+            app.edit_focus = if app.edit_focus == 0 {
+                app.edit_fields.len()
+            } else {
+                app.edit_focus - 1
             };
         }
-        KeyCode::Char('D') => {
-            app.modal = Modal::ConfirmDeleteCard;
-        }
+        KeyCode::Char('D') => app.modal = Modal::ConfirmDeleteCard,
         KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => save(app)?,
-        // Ctrl+o / Alt+o — open image via yazi (Ctrl+i == Tab in Kitty)
         KeyCode::Char('o')
             if key.modifiers.contains(KeyModifiers::CONTROL)
                 || key.modifiers.contains(KeyModifiers::ALT) =>
         {
-            if matches!(app.edit_field, AddField::Front | AddField::Back) {
+            if app.edit_focus < app.edit_fields.len() {
                 app.pending_external = PendingExternal::YaziPickImage;
             } else {
-                app.status = "Switch to Front/Back to insert an image".into();
+                app.status = "Switch to a note field to insert an image".into();
             }
         }
-        KeyCode::Enter => {
-            if matches!(app.edit_field, AddField::Front | AddField::Back) {
-                let input = match app.edit_field {
-                    AddField::Front => &mut app.edit_front,
-                    _ => &mut app.edit_back,
-                };
-                let _ = input.handle(InputRequest::InsertChar('\n'));
-            }
+        KeyCode::Enter if app.edit_focus < app.edit_fields.len() => {
+            let _ = app.edit_fields[app.edit_focus]
+                .1
+                .handle(InputRequest::InsertChar('\n'));
         }
-        KeyCode::Up if matches!(app.edit_field, AddField::Front | AddField::Back) => {
-            let input = match app.edit_field {
-                AddField::Front => &mut app.edit_front,
-                _ => &mut app.edit_back,
-            };
-            move_cursor_vertically(input, -1);
+        KeyCode::Up if app.edit_focus < app.edit_fields.len() => {
+            move_cursor_vertically(&mut app.edit_fields[app.edit_focus].1, -1);
         }
-        KeyCode::Down if matches!(app.edit_field, AddField::Front | AddField::Back) => {
-            let input = match app.edit_field {
-                AddField::Front => &mut app.edit_front,
-                _ => &mut app.edit_back,
-            };
-            move_cursor_vertically(input, 1);
+        KeyCode::Down if app.edit_focus < app.edit_fields.len() => {
+            move_cursor_vertically(&mut app.edit_fields[app.edit_focus].1, 1);
         }
         _ => {
-            let input = match app.edit_field {
-                AddField::Front => &mut app.edit_front,
-                AddField::Back => &mut app.edit_back,
-                AddField::Tags => &mut app.edit_tags,
-            };
-            input_from_key(input, key);
+            input_from_key(current_input(app), key);
         }
     }
     Ok(())
 }
 
-/// Called from main after suspending the TUI. Inserts `<img src="…">` at the caret.
+/// Called from main after suspending the TUI. Inserts an image tag at the caret.
 pub fn insert_image_via_yazi(app: &mut App) -> Result<Option<String>> {
     let Some(path) = media_import::pick_with_yazi()? else {
         return Ok(None);
     };
     let fname = media_import::import_media_file(&path)?;
     let tag = media_import::img_tag(&fname);
-    let input = match app.edit_field {
-        AddField::Front => &mut app.edit_front,
-        AddField::Back => &mut app.edit_back,
-        AddField::Tags => {
-            app.status = "Images go in Front/Back, not Tags".into();
-            return Ok(None);
-        }
-    };
+    if app.edit_focus >= app.edit_fields.len() {
+        app.status = "Images go in note fields, not Tags".into();
+        return Ok(None);
+    }
+    let input = &mut app.edit_fields[app.edit_focus].1;
     for ch in tag.chars() {
         let _ = input.handle(InputRequest::InsertChar(ch));
     }
     Ok(Some(fname))
 }
 
-/// Move caret up/down by one visual line, preserving column when possible.
 fn move_cursor_vertically(input: &mut Input, dir: i32) {
     let value = input.value();
     let cursor = input.cursor();
@@ -150,24 +116,23 @@ fn move_cursor_vertically(input: &mut Input, dir: i32) {
     if target_row == row {
         return;
     }
-    // char index of start of target row
     let mut idx = 0usize;
     for (r, line) in lines.iter().enumerate() {
         if r == target_row {
             let mut c = 0usize;
             let mut placed = idx;
             for ch in line.chars() {
-                let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-                if c + w > col {
+                let width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+                if c + width > col {
                     break;
                 }
-                c += w;
+                c += width;
                 placed += 1;
             }
             let _ = input.handle(InputRequest::SetCursor(placed));
             return;
         }
-        idx += line.chars().count() + 1; // +1 for '\n'
+        idx += line.chars().count() + 1;
     }
 }
 
@@ -175,35 +140,44 @@ fn save(app: &mut App) -> Result<()> {
     let Some(note_id) = app.edit_note_id else {
         return Ok(());
     };
-    let front = app.edit_front.value().trim().to_string();
-    let back = app.edit_back.value().trim().to_string();
-    let tags = app.edit_tags.value().to_string();
-    if front.is_empty() || back.is_empty() {
-        app.status = "Front and Back are required".into();
+    let fields: Vec<NoteField> = app
+        .edit_fields
+        .iter()
+        .map(|(name, input)| NoteField {
+            name: name.clone(),
+            value: input.value().to_string(),
+        })
+        .collect();
+    if fields.is_empty() {
+        app.status = "Note has no editable fields".into();
         return Ok(());
     }
-    app.store
-        .update_note(note_id, &front, &back, &tags)?;
+    let tags = app.edit_tags.value().to_string();
+    app.store.update_note_fields(note_id, &fields, &tags)?;
     app.status = "Note saved".into();
 
-    // Keep in-memory study card in sync
-    if let Some(sc) = app.study_queue.get_mut(app.study_index) {
-        if sc.card.note_id == note_id {
-            sc.front = front;
-            sc.back = back;
-            sc.tags = tags;
+    if let Some(card) = app.study_queue.get_mut(app.study_index) {
+        if card.card.note_id == note_id {
+            card.fields = fields;
+            card.tags = tags;
         }
     }
 
-    return_from_edit(app, true)?;
-    Ok(())
+    return_from_edit(app, true)
 }
 
 fn return_from_edit(app: &mut App, saved: bool) -> Result<()> {
-    let dest = app.edit_return;
+    let destination = app.edit_return;
     app.edit_return = Screen::Browse;
-    match dest {
+    match destination {
         Screen::Study => {
+            if saved && app.store.uses_official_backend() {
+                if let Some(deck_id) = app.current_deck_id() {
+                    app.study_queue = app.store.next_study_queue(deck_id, 50)?;
+                    app.study_index = 0;
+                    app.study_started_at = Instant::now();
+                }
+            }
             app.screen = Screen::Study;
             if !saved {
                 app.status = "Edit cancelled".into();
@@ -221,20 +195,24 @@ fn return_from_edit(app: &mut App, saved: bool) -> Result<()> {
 }
 
 pub fn after_delete_from_study(app: &mut App) -> Result<()> {
-    let card_id = app.edit_card_id;
     app.edit_return = Screen::Browse;
-    if let Some(cid) = card_id {
-        app.study_queue.retain(|c| c.card.id != cid);
+    if app.store.uses_official_backend() {
+        if let Some(deck_id) = app.current_deck_id() {
+            app.study_queue = app.store.next_study_queue(deck_id, 50)?;
+            app.study_index = 0;
+        }
+    } else if let Some(card_id) = app.edit_card_id {
+        app.study_queue.retain(|card| card.card.id != card_id);
         if app.study_index >= app.study_queue.len() {
             app.study_index = app.study_queue.len().saturating_sub(1);
         }
     }
+    app.study_started_at = Instant::now();
     app.answer_shown = false;
     app.media.reset();
     let _ = app.refresh_decks();
 
     if app.study_queue.is_empty() {
-        // try refill
         if let Some(deck_id) = app.current_deck_id() {
             app.study_queue = app.store.next_study_queue(deck_id, 50)?;
             app.study_index = 0;
@@ -254,7 +232,6 @@ pub fn after_delete_from_study(app: &mut App) -> Result<()> {
 pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     let panes = Layout::horizontal([Constraint::Percentage(48), Constraint::Percentage(52)])
         .areas::<2>(area);
-
     draw_editor_pane(frame, panes[0], app);
     draw_preview_pane(frame, panes[1], app);
 }
@@ -262,87 +239,117 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
 fn draw_editor_pane(frame: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::vertical([
         Constraint::Length(3),
-        Constraint::Percentage(42),
-        Constraint::Percentage(42),
-        Constraint::Min(3),
+        Constraint::Min(6),
+        Constraint::Length(3),
     ])
-    .areas::<4>(area);
+    .areas::<3>(area);
 
     let hint = if app.edit_return == Screen::Study {
-        "From study · Tab · Ctrl+o/Alt+o image · Ctrl+s save · Esc"
+        "From study · Tab fields · Ctrl+s save · Esc"
     } else {
-        "Tab · Ctrl+o/Alt+o image · Ctrl+s save · Esc"
+        "Tab fields · Ctrl+s save · Esc"
     };
     frame.render_widget(
-        Paragraph::new(hint).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Edit "),
-        ),
+        Paragraph::new(hint).block(Block::default().borders(Borders::ALL).title(" Edit ")),
         chunks[0],
     );
 
-    draw_multiline_input_field(
-        frame,
-        chunks[1],
-        " Front ",
-        &app.edit_front,
-        app.edit_field == AddField::Front,
-    );
-    draw_multiline_input_field(
-        frame,
-        chunks[2],
-        " Back ",
-        &app.edit_back,
-        app.edit_field == AddField::Back,
-    );
+    if let Some((name, input)) = app
+        .edit_fields
+        .get(app.edit_focus.min(app.edit_fields.len().saturating_sub(1)))
+    {
+        let position = app.edit_focus.min(app.edit_fields.len().saturating_sub(1)) + 1;
+        draw_multiline_input_field(
+            frame,
+            chunks[1],
+            &format!(" Field {position}/{} · {name} ", app.edit_fields.len()),
+            input,
+            app.edit_focus < app.edit_fields.len(),
+        );
+    } else {
+        frame.render_widget(
+            Paragraph::new("No fields").block(Block::default().borders(Borders::ALL)),
+            chunks[1],
+        );
+    }
     draw_input_field(
         frame,
-        chunks[3],
+        chunks[2],
         " Tags ",
         &app.edit_tags,
-        app.edit_field == AddField::Tags,
+        app.edit_focus == app.edit_fields.len(),
     );
 }
 
 fn draw_preview_pane(frame: &mut Frame, area: Rect, app: &mut App) {
     let chunks = Layout::vertical([Constraint::Min(6), Constraint::Length(3)]).areas::<2>(area);
-
-    // Mirror study: editing Front → Question side; Back/Tags → Answer side
-    let answer_shown = app.edit_field != AddField::Front;
-    let _ = app.media.prepare_card(
-        -1,
-        answer_shown,
-        app.edit_front.value(),
-        app.edit_back.value(),
-    );
-    if let Some(msg) = app.media.last_image_status.clone() {
-        if app.status != msg {
-            app.status = msg;
+    let answer_shown = app.edit_focus > 0;
+    let front = app
+        .edit_fields
+        .first()
+        .map(|field| field.1.value().to_string())
+        .unwrap_or_default();
+    let back = app
+        .edit_fields
+        .iter()
+        .skip(1)
+        .map(|field| field.1.value())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let _ = app
+        .media
+        .prepare_card(-1, answer_shown, false, &front, &back);
+    if let Some(message) = app.media.last_image_status.clone() {
+        if app.status != message {
+            app.status = message;
         }
     }
 
     study::draw_card_preview(
         frame,
         chunks[0],
-        app.edit_front.value(),
-        app.edit_back.value(),
-        answer_shown,
-        Some("Preview"),
+        study::CardPreview {
+            front: &front,
+            back: &back,
+            front_document: None,
+            back_document: None,
+            answer_shown,
+            answer_includes_question: false,
+            title_prefix: Some("Field preview"),
+        },
         Some(&mut app.media),
     );
 
-    let mode = if answer_shown {
-        "Answer (after Space)"
-    } else {
-        "Question"
-    };
+    let field_name = app
+        .edit_fields
+        .get(app.edit_focus)
+        .map(|field| field.0.as_str())
+        .unwrap_or("Tags");
     let tip = Line::from(vec![
-        Span::styled("Study preview", Style::default().fg(Color::Cyan)),
-        Span::raw(format!("  ·  {mode}  ·  Tab switches side")),
+        Span::styled("Editing", Style::default().fg(Color::Cyan)),
+        Span::raw(format!(
+            "  ·  {field_name}  ·  all note fields are preserved"
+        )),
     ]);
     frame.render_widget(
         Paragraph::new(tip).block(Block::default().borders(Borders::ALL).title(" ")),
         chunks[1],
     );
+}
+
+fn set_edit_fields(app: &mut App, fields: Vec<NoteField>, tags: String) {
+    app.edit_fields = fields
+        .into_iter()
+        .map(|field| (field.name, Input::new(field.value)))
+        .collect();
+    app.edit_focus = 0;
+    app.edit_tags = Input::new(tags);
+}
+
+fn current_input(app: &mut App) -> &mut Input {
+    if app.edit_focus < app.edit_fields.len() {
+        &mut app.edit_fields[app.edit_focus].1
+    } else {
+        &mut app.edit_tags
+    }
 }

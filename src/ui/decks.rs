@@ -7,11 +7,23 @@ use ratatui::{
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState},
     Frame,
 };
+use std::time::Instant;
 use tui_input::Input;
 
 use super::{App, Modal, Screen};
 
 pub fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    if crate::sync::paths::migration_required() {
+        if key.code == KeyCode::Char('y') {
+            super::sync::open(app);
+        } else {
+            app.status =
+                "Legacy shadow is blocked · press y, sign in, then use F2 to download from AnkiWeb"
+                    .into();
+        }
+        return Ok(());
+    }
+
     match key.code {
         KeyCode::Up | KeyCode::Char('k') => {
             if app.selected_deck > 0 {
@@ -73,10 +85,8 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('d') => {
             app.modal = Modal::ConfirmDeleteDeck;
         }
-        KeyCode::Char('f') => {
-            if app.current_deck_id().is_some() {
-                app.modal = Modal::ConfirmResetDeck;
-            }
+        KeyCode::Char('f') if app.current_deck_id().is_some() => {
+            app.modal = Modal::ConfirmResetDeck;
         }
         _ => {}
     }
@@ -91,9 +101,9 @@ pub fn start_study(app: &mut App) -> Result<()> {
     app.study_index = 0;
     app.answer_shown = false;
     app.study_done = 0;
+    app.study_started_at = Instant::now();
     if app.study_queue.is_empty() {
-        app.status =
-            "No cards due · press f to Reset/Forget deck (Anki), then study again".into();
+        app.status = "No cards due · press f to Reset/Forget deck (Anki), then study again".into();
     } else {
         app.screen = Screen::Study;
         app.status = format!("{} cards in queue", app.study_queue.len());
@@ -125,7 +135,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
             Style::default()
         };
         Row::new([
-            Cell::from(d.name.clone()),
+            Cell::from(format!("{}{}", "  ".repeat(d.level), d.name)),
             Cell::from(d.new.to_string()).style(Style::default().fg(Color::Blue)),
             Cell::from(d.learning.to_string()).style(Style::default().fg(Color::Yellow)),
             Cell::from(d.review.to_string()).style(Style::default().fg(Color::Green)),
@@ -152,6 +162,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let mut state = TableState::default().with_selected(Some(app.selected_deck));
     frame.render_stateful_widget(table, chunks[0], &mut state);
 
+    let migration_required = crate::sync::paths::migration_required();
     let selected = app.decks.get(app.selected_deck);
     let summary = if let Some(d) = selected {
         Line::from(vec![
@@ -166,6 +177,8 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
                 d.total
             )),
         ])
+    } else if migration_required {
+        Line::from("Legacy collection blocked · press y to open AnkiWeb Sync")
     } else {
         Line::from("No decks")
     };
@@ -173,8 +186,18 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
         Paragraph::new(vec![
             summary,
             Line::from(""),
-            Line::from("Study like Anki: New → Learning → Review, scheduled with FSRS."),
-            Line::from("No cards due?  f  = Reset/Forget deck to New (Anki Cards → Reset)."),
+            Line::from(if migration_required {
+                "Upload the correct Desktop collection to AnkiWeb, then download it with F2."
+            } else if app.store.uses_official_backend() {
+                "Scheduler and daily limits: official Anki backend."
+            } else {
+                "Offline fallback: New → Learning → Review, scheduled with rs-fsrs."
+            }),
+            Line::from(if migration_required {
+                "The blocked collection and fallback database cannot be changed from this screen."
+            } else {
+                "No cards due?  f  = Reset/Forget deck to New (Anki Cards → Reset)."
+            }),
         ])
         .block(Block::default().borders(Borders::ALL).title(" Summary ")),
         chunks[1],

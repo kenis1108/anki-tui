@@ -17,6 +17,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph},
     Frame,
 };
+use std::time::Instant;
 use tui_input::Input;
 
 use crate::db::Store;
@@ -93,9 +94,9 @@ pub struct App {
     pub browse_selected: usize,
     pub edit_note_id: Option<i64>,
     pub edit_card_id: Option<i64>,
-    pub edit_field: AddField,
-    pub edit_front: Input,
-    pub edit_back: Input,
+    pub edit_fields: Vec<(String, Input)>,
+    /// `edit_fields.len()` means the Tags input is focused.
+    pub edit_focus: usize,
     pub edit_tags: Input,
     pub options_field: OptionsField,
     pub options_new: Input,
@@ -107,14 +108,24 @@ pub struct App {
     pub sync_pass: Input,
     pub sync_log: String,
     pub sync_busy: bool,
+    sync_progress: Option<crate::anki_backend::BackendProgress>,
+    sync_task: Option<sync::SyncTask>,
+    quit_after_sync: bool,
+    exit_sync_error: Option<String>,
     pub media: MediaSession,
     /// Where EditNote should return (Browse or Study).
     pub edit_return: Screen,
     pub pending_external: PendingExternal,
+    pub study_started_at: Instant,
 }
 
 impl App {
     pub fn new(store: Store, scheduler: Scheduler) -> Result<Self> {
+        if crate::sync::paths::official_ready() && !crate::anki_backend::available() {
+            anyhow::bail!(
+                "official Anki collection is initialized, but the Python 'anki' package is unavailable; refusing to open a divergent fallback collection"
+            );
+        }
         let mut app = Self {
             store,
             scheduler,
@@ -138,9 +149,8 @@ impl App {
             browse_selected: 0,
             edit_note_id: None,
             edit_card_id: None,
-            edit_field: AddField::Front,
-            edit_front: Input::default(),
-            edit_back: Input::default(),
+            edit_fields: Vec::new(),
+            edit_focus: 0,
             edit_tags: Input::default(),
             options_field: OptionsField::NewPerDay,
             options_new: Input::default(),
@@ -152,11 +162,22 @@ impl App {
             sync_pass: Input::default(),
             sync_log: String::new(),
             sync_busy: false,
+            sync_progress: None,
+            sync_task: None,
+            quit_after_sync: false,
+            exit_sync_error: None,
             media: MediaSession::new(),
             edit_return: Screen::Browse,
             pending_external: PendingExternal::None,
+            study_started_at: Instant::now(),
         };
-        app.refresh_decks()?;
+        if crate::sync::paths::migration_required() {
+            app.status =
+                "Legacy shadow is blocked · press y, sign in, then use F2 to download from AnkiWeb"
+                    .into();
+        } else {
+            app.refresh_decks()?;
+        }
         Ok(app)
     }
 
@@ -173,6 +194,13 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
+        if self.sync_busy {
+            if self.screen == Screen::DeckBrowser && key.code == KeyCode::Char('q') {
+                self.request_quit();
+            }
+            return Ok(());
+        }
+
         if self.modal != Modal::None {
             return self.handle_modal_key(key);
         }
@@ -184,7 +212,7 @@ impl App {
                 return Ok(());
             }
             (Screen::DeckBrowser, KeyCode::Char('q')) => {
-                self.should_quit = true;
+                self.request_quit();
                 return Ok(());
             }
             _ => {}
@@ -203,6 +231,22 @@ impl App {
         Ok(())
     }
 
+    pub fn start_automatic_sync(&mut self) {
+        sync::start_automatic(self);
+    }
+
+    pub fn poll_sync(&mut self) -> Result<()> {
+        sync::poll(self)
+    }
+
+    pub fn request_quit(&mut self) {
+        sync::request_quit(self);
+    }
+
+    pub fn take_exit_sync_error(&mut self) -> Option<String> {
+        self.exit_sync_error.take()
+    }
+
     pub fn handle_paste(&mut self, text: &str) -> Result<()> {
         if self.modal != Modal::None {
             if matches!(self.modal, Modal::CreateDeck | Modal::RenameDeck) {
@@ -212,10 +256,10 @@ impl App {
         }
         match self.screen {
             Screen::EditNote => {
-                let input = match self.edit_field {
-                    AddField::Front => &mut self.edit_front,
-                    AddField::Back => &mut self.edit_back,
-                    AddField::Tags => &mut self.edit_tags,
+                let input = if self.edit_focus < self.edit_fields.len() {
+                    &mut self.edit_fields[self.edit_focus].1
+                } else {
+                    &mut self.edit_tags
                 };
                 common::input_insert_text(input, text);
             }
@@ -230,14 +274,12 @@ impl App {
             Screen::Browse => {
                 common::input_insert_text(&mut self.browse_query, text);
             }
-            Screen::Sync => {
-                if !self.sync_busy {
-                    let input = match self.sync_field {
-                        sync::SyncField::User => &mut self.sync_user,
-                        sync::SyncField::Pass => &mut self.sync_pass,
-                    };
-                    common::input_insert_text(input, text);
-                }
+            Screen::Sync if !self.sync_busy => {
+                let input = match self.sync_field {
+                    sync::SyncField::User => &mut self.sync_user,
+                    sync::SyncField::Pass => &mut self.sync_pass,
+                };
+                common::input_insert_text(input, text);
             }
             _ => {}
         }
@@ -411,7 +453,9 @@ fn draw_title(frame: &mut Frame, area: Rect, app: &App) {
 
 fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
     let hints = match app.screen {
-        Screen::DeckBrowser => "Enter study · a add · b browse · f reset deck · y sync · s stats · q quit",
+        Screen::DeckBrowser => {
+            "Enter study · a add · b browse · f reset deck · y sync · s stats · q quit"
+        }
         Screen::Study => "Space show · 1-4 rate · e edit · f forget · m audio · Esc decks",
         Screen::AddNote => "Tab fields · Ctrl+o/Alt+o image · Enter save · Esc back",
         Screen::Browse => "/ search · Enter edit · s suspend · f forget · Esc decks",
@@ -506,9 +550,7 @@ fn draw_modal(frame: &mut Frame, area: Rect, app: &App) {
                 .map(|d| d.name.as_str())
                 .unwrap_or("?");
             let body = Paragraph::new(vec![
-                Line::from(format!(
-                    "Reset all cards in '{name}' to New?"
-                )),
+                Line::from(format!("Reset all cards in '{name}' to New?")),
                 Line::from("Like Anki: Cards → Reset (Forget). Review history kept but ignored."),
                 Line::from(""),
                 Line::from("y confirm · any other key cancel"),

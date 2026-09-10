@@ -1,8 +1,10 @@
 use anyhow::{Context, Result};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::db::collection_dir;
+
+const OFFICIAL_MARKER: &str = ".official-backend-v1";
 
 pub fn anki_dir() -> Result<PathBuf> {
     let dir = collection_dir()?.join("anki");
@@ -24,50 +26,23 @@ pub fn media_db_path() -> Result<PathBuf> {
     Ok(anki_dir()?.join("collection.media.db2"))
 }
 
-pub fn save_anki2_bytes(bytes: &[u8]) -> Result<PathBuf> {
-    let path = anki2_path()?;
-    // remove wal/shm sidecars if any
-    for ext in ["-wal", "-shm"] {
-        let p = PathBuf::from(format!("{}{ext}", path.display()));
-        let _ = fs::remove_file(p);
-    }
-    fs::write(&path, bytes).with_context(|| format!("write {}", path.display()))?;
-    Ok(path)
-}
-
-pub fn load_anki2_bytes() -> Result<Option<Vec<u8>>> {
-    let path = anki2_path()?;
-    if !path.exists() {
-        return Ok(None);
-    }
-    // checkpoint if openable
-    if let Ok(conn) = rusqlite::Connection::open(&path) {
-        let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
-    }
-    Ok(Some(fs::read(&path)?))
-}
-
 pub fn anki2_exists() -> bool {
     anki2_path().map(|p| p.exists()).unwrap_or(false)
 }
 
-pub fn ensure_media_layout() -> Result<(PathBuf, PathBuf)> {
-    Ok((media_folder()?, media_db_path()?))
+pub fn official_ready() -> bool {
+    anki_dir()
+        .map(|dir| dir.join(OFFICIAL_MARKER).exists())
+        .unwrap_or(false)
+        && anki2_exists()
 }
 
-#[allow(dead_code)]
-pub fn remove_anki2() -> Result<()> {
-    let path = anki2_path()?;
-    if path.exists() {
-        fs::remove_file(&path)?;
-    }
-    for ext in ["-wal", "-shm"] {
-        let p = PathBuf::from(format!("{}{ext}", path.display()));
-        let _ = fs::remove_file(p);
-    }
-    Ok(())
+pub fn migration_required() -> bool {
+    anki2_exists() && !official_ready()
 }
 
-pub fn path_str(p: &Path) -> String {
-    p.display().to_string()
+pub fn mark_official_ready(anki_version: &str) -> Result<()> {
+    let marker = anki_dir()?.join(OFFICIAL_MARKER);
+    fs::write(&marker, format!("anki={anki_version}\n"))
+        .with_context(|| format!("write {}", marker.display()))
 }

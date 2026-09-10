@@ -32,8 +32,12 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 KeyCode::Char(c) if c.is_ascii_digit() => {
                     input_from_key(input, key);
                 }
-                KeyCode::Backspace | KeyCode::Delete | KeyCode::Left | KeyCode::Right
-                | KeyCode::Home | KeyCode::End => {
+                KeyCode::Backspace
+                | KeyCode::Delete
+                | KeyCode::Left
+                | KeyCode::Right
+                | KeyCode::Home
+                | KeyCode::End => {
                     input_from_key(input, key);
                 }
                 _ => {}
@@ -101,10 +105,8 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     );
 
     frame.render_widget(
-        Paragraph::new(
-            "Limits apply when building the study queue (Anki-style daily caps).",
-        )
-        .block(Block::default().borders(Borders::ALL).title(" Note ")),
+        Paragraph::new("Limits apply when building the study queue (Anki-style daily caps).")
+            .block(Block::default().borders(Borders::ALL).title(" Note ")),
         chunks[3],
     );
 }

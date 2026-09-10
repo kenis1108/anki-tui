@@ -19,8 +19,8 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let s = &app.stats;
-    let chunks = Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .areas::<2>(area);
+    let chunks =
+        Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)]).areas::<2>(area);
 
     let collection = Paragraph::new(vec![
         line("Decks", s.total_decks, Color::Cyan),
@@ -34,11 +34,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
         line("Suspended", s.suspended_cards, Color::Red),
         line("Mature (≥21d)", s.mature_cards, Color::Cyan),
     ])
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" Collection "),
-    );
+    .block(Block::default().borders(Borders::ALL).title(" Collection "));
     frame.render_widget(collection, chunks[0]);
 
     let activity = Paragraph::new(vec![
@@ -47,11 +43,19 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
         line("Reviews (30d)", s.reviews_30d, Color::Green),
         Line::from(""),
         Line::from(Span::styled(
-            "Scheduler: FSRS (rs-fsrs)",
+            if app.store.uses_official_backend() {
+                "Scheduler: official Anki backend"
+            } else {
+                "Scheduler: offline rs-fsrs fallback"
+            },
             Style::default().fg(Color::DarkGray),
         )),
         Line::from(Span::styled(
-            "Database: ~/.local/share/anki-tui/collection.db",
+            if app.store.uses_official_backend() {
+                "Database: ~/.local/share/anki-tui/anki/collection.anki2"
+            } else {
+                "Database: ~/.local/share/anki-tui/collection.db"
+            },
             Style::default().fg(Color::DarkGray),
         )),
     ])

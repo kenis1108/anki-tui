@@ -1,6 +1,7 @@
+mod anki_backend;
 mod db;
-mod media_view;
 mod media_import;
+mod media_view;
 mod models;
 mod scheduler;
 mod sync;
@@ -28,15 +29,24 @@ fn main() -> Result<()> {
     let _ = execute!(stdout(), EnableBracketedPaste);
     // Query Kitty/Sixel/etc. once; may briefly touch stdin before the event loop.
     app.media.init_picker();
+    app.start_automatic_sync();
     let result = run(&mut terminal, &mut app);
     app.media.reset();
     let _ = execute!(stdout(), DisableBracketedPaste);
     ratatui::restore();
+    if let Some(error) = app.take_exit_sync_error() {
+        eprintln!("{error}");
+    }
     result
 }
 
 fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
-    while !app.should_quit {
+    loop {
+        app.poll_sync()?;
+        if app.should_quit {
+            break;
+        }
+
         if app.pending_external != PendingExternal::None {
             let action = std::mem::replace(&mut app.pending_external, PendingExternal::None);
             run_external(terminal, app, action)?;
@@ -51,7 +61,7 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
                     if key.modifiers.contains(KeyModifiers::CONTROL)
                         && matches!(key.code, KeyCode::Char('c'))
                     {
-                        app.should_quit = true;
+                        app.request_quit();
                     } else {
                         app.handle_key(key)?;
                     }

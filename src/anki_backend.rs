@@ -65,8 +65,24 @@ pub struct BackendProgress {
     pub detail: String,
 }
 
+/// Anki may print diagnostics to stdout (e.g. "blocked main thread" stack
+/// traces). Prefer the last JSON object that looks like our protocol reply.
+fn extract_response_json(output: &[u8]) -> &[u8] {
+    const MARKER: &[u8] = b"{\"ok\":";
+    let start = output
+        .windows(MARKER.len())
+        .rposition(|window| window == MARKER)
+        .unwrap_or(0);
+    let mut end = output.len();
+    while end > start && matches!(output[end - 1], b' ' | b'\n' | b'\r' | b'\t') {
+        end -= 1;
+    }
+    &output[start..end]
+}
+
 fn decode_response<T: DeserializeOwned>(output: &[u8]) -> Result<T> {
-    let response: Response = serde_json::from_slice(output).with_context(|| {
+    let payload = extract_response_json(output);
+    let response: Response = serde_json::from_slice(payload).with_context(|| {
         format!(
             "parse official Anki backend response: {}",
             String::from_utf8_lossy(output).trim()
@@ -364,6 +380,14 @@ mod tests {
                 .unwrap_err();
 
         assert_eq!(error.to_string(), "SyncError: missing original size");
+    }
+
+    #[test]
+    fn decode_response_ignores_anki_stdout_diagnostics() {
+        let polluted = b"blocked main thread for 1460ms:\n  File \"<string>\", line 1\n{\"ok\":true,\"result\":{\"hkey\":\"secret\",\"endpoint\":\"\"}}\n";
+        let login: LoginOutput = decode_response(polluted).unwrap();
+        assert_eq!(login.hkey, "secret");
+        assert_eq!(login.endpoint, "");
     }
 
     #[test]

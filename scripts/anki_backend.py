@@ -811,20 +811,27 @@ def main() -> None:
     path = str(Path(request["collection"]).expanduser())
     action = request["action"]
     args = request.get("args", {})
+    # Anki's backend may print diagnostics (e.g. "blocked main thread") to
+    # stdout. Keep the JSON protocol on a dedicated stream.
+    protocol_out = sys.stdout
+    sys.stdout = sys.stderr
     try:
-        if action in ("full_download", "full_upload"):
-            result = full_sync(path, action, args)
-        else:
-            col = Collection(path)
-            try:
-                result = run_action(col, action, args)
-            finally:
-                col.close()
-        response = {"ok": True, "result": result}
-    except Exception as error:
-        response = {"ok": False, "error": f"{type(error).__name__}: {error}"}
-    json.dump(response, sys.stdout, ensure_ascii=False)
-    sys.stdout.write("\n")
+        try:
+            if action in ("full_download", "full_upload"):
+                result = full_sync(path, action, args)
+            else:
+                col = Collection(path)
+                try:
+                    result = run_action(col, action, args)
+                finally:
+                    col.close()
+            response = {"ok": True, "result": result}
+        except Exception as error:
+            response = {"ok": False, "error": f"{type(error).__name__}: {error}"}
+    finally:
+        sys.stdout = protocol_out
+    json.dump(response, protocol_out, ensure_ascii=False)
+    protocol_out.write("\n")
 
 
 if __name__ == "__main__":

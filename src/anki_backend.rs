@@ -8,7 +8,9 @@ use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::models::{BrowseRow, Deck, DeckCounts, DeckOptions, NoteField, StatsSummary, StudyCard};
+use crate::models::{
+    BrowseRow, CardPreviewRender, Deck, DeckCounts, DeckOptions, NoteField, StatsSummary, StudyCard,
+};
 
 const HELPER: &str = include_str!("../scripts/anki_backend.py");
 const PROGRESS_PREFIX: &str = "ANKI_TUI_PROGRESS ";
@@ -277,6 +279,13 @@ pub fn update_note(note_id: i64, fields: &[NoteField], tags: &str) -> Result<()>
     )
 }
 
+pub fn preview_card(card_id: i64, fields: &[NoteField], tags: &str) -> Result<CardPreviewRender> {
+    call(
+        "preview_card",
+        json!({ "card_id": card_id, "fields": fields, "tags": tags }),
+    )
+}
+
 pub fn add_media_file(filename: &str, data: &[u8]) -> Result<String> {
     call(
         "add_media",
@@ -444,6 +453,27 @@ mod tests {
         assert_eq!(queue.len(), 1);
         assert_eq!(queue[0].answer_intervals.len(), 4);
         assert_eq!(queue[0].fields.len(), 2);
+
+        let mut draft_fields = queue[0].fields.clone();
+        draft_fields[0].value = "Draft question".into();
+        draft_fields[1].value = "Draft answer".into();
+        let preview: CardPreviewRender = call_at(
+            &collection,
+            "preview_card",
+            json!({
+                "card_id": queue[0].card.id,
+                "fields": draft_fields,
+                "tags": "preview-only",
+            }),
+        )
+        .unwrap();
+        assert!(preview.front.contains("Draft question"));
+        assert!(preview.back.contains("Draft answer"));
+        assert!(preview.front_document.is_some());
+        assert!(preview.back_document.is_some());
+        let rows_before_save: Vec<BrowseRow> =
+            call_at(&collection, "browse", json!({ "query": "", "limit": 10 })).unwrap();
+        assert_eq!(rows_before_save[0].fields[0].value, "Question");
 
         let mut fields = queue[0].fields.clone();
         fields[1].value = "Updated answer".into();

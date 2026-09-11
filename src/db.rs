@@ -288,6 +288,18 @@ impl Store {
         self.update_note(note_id, front, back, tags)
     }
 
+    pub fn preview_card(
+        &self,
+        card_id: i64,
+        fields: &[NoteField],
+        tags: &str,
+    ) -> Result<crate::models::CardPreviewRender> {
+        if self.uses_official_backend() {
+            return crate::anki_backend::preview_card(card_id, fields, tags);
+        }
+        anyhow::bail!("card preview requires the official Anki backend")
+    }
+
     pub fn delete_note(&self, note_id: i64) -> Result<()> {
         self.conn
             .execute("DELETE FROM notes WHERE id = ?1", params![note_id])?;

@@ -129,7 +129,6 @@ impl Card {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)]
 pub struct StudyCard {
     pub card: Card,
     pub front: String,
@@ -148,6 +147,19 @@ pub struct StudyCard {
     pub scheduling_states_hex: String,
     #[serde(default)]
     pub fields: Vec<NoteField>,
+}
+
+/// Official template render for the Edit preview pane (draft fields, unsaved).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CardPreviewRender {
+    pub front: String,
+    pub back: String,
+    #[serde(default)]
+    pub answer_includes_question: bool,
+    #[serde(default)]
+    pub front_document: Option<CardDocument>,
+    #[serde(default)]
+    pub back_document: Option<CardDocument>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

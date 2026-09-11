@@ -22,6 +22,7 @@ from anki.collection import Collection
 from anki.scheduler.v3 import CardAnswer
 from anki.scheduler_pb2 import SchedulingStates
 from anki.sync_pb2 import SyncAuth
+from anki.template import TemplateRenderContext
 
 PROGRESS_PREFIX = "ANKI_TUI_PROGRESS "
 
@@ -101,6 +102,35 @@ def rendered_sides(card) -> tuple[str, str, str]:
     question = inject_audio(output.question_text, output.question_av_tags, "q")
     answer = inject_audio(output.answer_text, output.answer_av_tags, "a")
     return question, answer, output.css
+
+
+def preview_card(col: Collection, card_id: int, fields: list[dict], tags: str | None = None) -> dict:
+    """Render the card template with draft field values without writing the note."""
+    card = col.get_card(card_id)
+    note = col.get_note(card.nid)
+    expected = [name for name, _ in note.items()]
+    if len(fields) != len(note.fields):
+        raise ValueError("note field count changed; refusing preview")
+    if [field["name"] for field in fields] != expected:
+        raise ValueError("note field names changed; refusing preview")
+    note.fields = [field["value"] for field in fields]
+    if tags is not None:
+        note.set_tags_from_str(tags)
+    notetype = note.note_type()
+    template = notetype["tmpls"][int(card.ord)]
+    output = TemplateRenderContext.from_card_layout(
+        note, card, notetype, template, False
+    ).render()
+    question = inject_audio(output.question_text, output.question_av_tags, "q")
+    answer = inject_audio(output.answer_text, output.answer_av_tags, "a")
+    css = output.css
+    return {
+        "front": question,
+        "back": answer,
+        "answer_includes_question": True,
+        "front_document": terminal_document(question, css, int(card.ord)),
+        "back_document": terminal_document(answer, css, int(card.ord)),
+    }
 
 
 def css_declarations(value: str) -> dict[str, str]:
@@ -679,6 +709,13 @@ def run_action(col: Collection, action: str, args: dict):
         note.set_tags_from_str(args.get("tags", ""))
         col.update_note(note)
         return None
+    if action == "preview_card":
+        return preview_card(
+            col,
+            int(args["card_id"]),
+            args["fields"],
+            args.get("tags"),
+        )
     if action == "delete_card":
         col.remove_notes_by_card([int(args["card_id"])])
         return None

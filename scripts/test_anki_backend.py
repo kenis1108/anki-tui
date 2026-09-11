@@ -197,5 +197,43 @@ class FullSyncTests(unittest.TestCase):
         self.assertIn(("Syncing media", "Complete"), progress_events)
 
 
+class PreviewCardTests(unittest.TestCase):
+    def test_preview_uses_draft_fields_without_saving(self):
+        import tempfile
+        from pathlib import Path
+
+        from anki.collection import Collection
+
+        root = Path(tempfile.mkdtemp(prefix="anki-tui-preview-"))
+        col = Collection(str(root / "collection.anki2"))
+        self.addCleanup(col.close)
+        note = col.new_note(col.models.current())
+        note.fields[0] = "SavedFront"
+        if len(note.fields) > 1:
+            note.fields[1] = "SavedBack"
+        col.add_note(note, col.decks.get_current_id())
+        card = note.cards()[0]
+        fields = []
+        for index, (name, _) in enumerate(note.items()):
+            value = "DraftFront" if index == 0 else "DraftBack"
+            fields.append({"name": name, "value": value})
+
+        preview = anki_backend.preview_card(
+            col,
+            int(card.id),
+            fields,
+            tags="draft-tag",
+        )
+
+        self.assertIn("DraftFront", preview["front"])
+        self.assertIn("DraftBack", preview["back"])
+        self.assertTrue(preview["answer_includes_question"])
+        self.assertTrue(preview["front_document"]["blocks"])
+        self.assertTrue(preview["back_document"]["blocks"])
+        saved = col.get_note(note.id)
+        self.assertEqual(saved.fields[0], "SavedFront")
+        self.assertNotIn("draft-tag", saved.string_tags())
+
+
 if __name__ == "__main__":
     unittest.main()

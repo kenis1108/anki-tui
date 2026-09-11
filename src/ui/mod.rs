@@ -98,6 +98,9 @@ pub struct App {
     /// `edit_fields.len()` means the Tags input is focused.
     pub edit_focus: usize,
     pub edit_tags: Input,
+    /// Cached official template render for the Edit preview pane.
+    pub edit_preview: Option<crate::models::CardPreviewRender>,
+    pub edit_preview_key: String,
     pub options_field: OptionsField,
     pub options_new: Input,
     pub options_rev: Input,
@@ -155,6 +158,8 @@ impl App {
             edit_fields: Vec::new(),
             edit_focus: 0,
             edit_tags: Input::default(),
+            edit_preview: None,
+            edit_preview_key: String::new(),
             options_field: OptionsField::NewPerDay,
             options_new: Input::default(),
             options_rev: Input::default(),

@@ -21,6 +21,7 @@ pub fn open_from_browse(app: &mut App, row: BrowseRow) {
     app.edit_note_id = Some(row.note_id);
     app.edit_card_id = Some(row.card_id);
     set_edit_fields(app, row.fields, row.tags);
+    clear_edit_preview(app);
     app.screen = Screen::EditNote;
 }
 
@@ -33,6 +34,7 @@ pub fn open_from_study(app: &mut App) -> Result<()> {
     app.edit_note_id = Some(card.card.note_id);
     app.edit_card_id = Some(card.card.id);
     set_edit_fields(app, card.fields, card.tags);
+    clear_edit_preview(app);
     app.screen = Screen::EditNote;
     app.status = "Editing current card".into();
     Ok(())
@@ -169,6 +171,7 @@ fn save(app: &mut App) -> Result<()> {
 fn return_from_edit(app: &mut App, saved: bool) -> Result<()> {
     let destination = app.edit_return;
     app.edit_return = Screen::Browse;
+    clear_edit_preview(app);
     match destination {
         Screen::Study => {
             if saved && app.store.uses_official_backend() {
@@ -284,21 +287,41 @@ fn draw_editor_pane(frame: &mut Frame, area: Rect, app: &App) {
 fn draw_preview_pane(frame: &mut Frame, area: Rect, app: &mut App) {
     let chunks = Layout::vertical([Constraint::Min(6), Constraint::Length(3)]).areas::<2>(area);
     let answer_shown = app.edit_focus > 0;
-    let front = app
-        .edit_fields
-        .first()
-        .map(|field| field.1.value().to_string())
-        .unwrap_or_default();
-    let back = app
-        .edit_fields
-        .iter()
-        .skip(1)
-        .map(|field| field.1.value())
-        .collect::<Vec<_>>()
-        .join("\n");
-    let _ = app
-        .media
-        .prepare_card(-1, answer_shown, false, &front, &back);
+    refresh_edit_preview(app);
+
+    let (front, back, answer_includes_question, front_document, back_document) =
+        if let Some(preview) = app.edit_preview.clone() {
+            (
+                preview.front,
+                preview.back,
+                preview.answer_includes_question,
+                preview.front_document,
+                preview.back_document,
+            )
+        } else {
+            let front = app
+                .edit_fields
+                .first()
+                .map(|field| field.1.value().to_string())
+                .unwrap_or_default();
+            let back = app
+                .edit_fields
+                .iter()
+                .skip(1)
+                .map(|field| field.1.value())
+                .collect::<Vec<_>>()
+                .join("\n");
+            (front, back, false, None, None)
+        };
+
+    let card_id = app.edit_card_id.unwrap_or(-1);
+    let _ = app.media.prepare_card(
+        card_id,
+        answer_shown,
+        answer_includes_question,
+        &front,
+        &back,
+    );
     if let Some(message) = app.media.last_image_status.clone() {
         if app.status != message {
             app.status = message;
@@ -311,10 +334,10 @@ fn draw_preview_pane(frame: &mut Frame, area: Rect, app: &mut App) {
         study::CardPreview {
             front: &front,
             back: &back,
-            front_document: None,
-            back_document: None,
+            front_document: front_document.as_ref(),
+            back_document: back_document.as_ref(),
             answer_shown,
-            answer_includes_question: false,
+            answer_includes_question,
             title_prefix: Some("Field preview"),
         },
         Some(&mut app.media),
@@ -335,6 +358,60 @@ fn draw_preview_pane(frame: &mut Frame, area: Rect, app: &mut App) {
         Paragraph::new(tip).block(Block::default().borders(Borders::ALL).title(" ")),
         chunks[1],
     );
+}
+
+fn clear_edit_preview(app: &mut App) {
+    app.edit_preview = None;
+    app.edit_preview_key.clear();
+}
+
+fn refresh_edit_preview(app: &mut App) {
+    if !app.store.uses_official_backend() {
+        clear_edit_preview(app);
+        return;
+    }
+    let Some(card_id) = app.edit_card_id else {
+        clear_edit_preview(app);
+        return;
+    };
+    let fields: Vec<NoteField> = app
+        .edit_fields
+        .iter()
+        .map(|(name, input)| NoteField {
+            name: name.clone(),
+            value: input.value().to_string(),
+        })
+        .collect();
+    let tags = app.edit_tags.value().to_string();
+    let key = preview_cache_key(card_id, &fields, &tags);
+    if app.edit_preview_key == key {
+        return;
+    }
+    match app.store.preview_card(card_id, &fields, &tags) {
+        Ok(preview) => {
+            app.edit_preview = Some(preview);
+            app.edit_preview_key = key;
+        }
+        Err(error) => {
+            app.edit_preview = None;
+            app.edit_preview_key = key;
+            let message = format!("preview: {error:#}");
+            if app.status != message {
+                app.status = message;
+            }
+        }
+    }
+}
+
+fn preview_cache_key(card_id: i64, fields: &[NoteField], tags: &str) -> String {
+    let mut key = format!("{card_id}\n{tags}");
+    for field in fields {
+        key.push('\n');
+        key.push_str(&field.name);
+        key.push('\0');
+        key.push_str(&field.value);
+    }
+    key
 }
 
 fn set_edit_fields(app: &mut App, fields: Vec<NoteField>, tags: String) {

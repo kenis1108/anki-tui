@@ -16,18 +16,33 @@ Terminal Anki client written in Rust (ratatui) and backed by Anki's official sch
 
 ## Dependencies
 
+`cargo run` only installs Rust crates. System tools below must be installed separately.
+
 ### Build
 
 - Rust toolchain (`cargo`)
 
-### Runtime (media)
+### Runtime (required)
+
+**Python 3 + [`anki`](https://pypi.org/project/anki/)** — official collection, scheduler, and AnkiWeb sync. Login / F2–F5 fail with `No module named 'anki'` if this is missing.
+
+```bash
+# install into the same python3 that appears first on your PATH
+python3 -m pip install --user anki
+
+# verify
+python3 -c 'from anki.collection import Collection'
+```
+
+Keep the package version roughly aligned with Anki Desktop. On a new machine, reinstall this even if the repo already builds.
+
+### Runtime (media / optional)
 
 | Tool | Used for | Notes |
 |------|----------|--------|
-| **Python 3 + `anki` package** | Official collection, scheduler, and sync backend | Required for exact Anki mode. Keep its version aligned with Desktop; verify with `python3 -c 'from anki.collection import Collection'`. |
 | **[mpv](https://mpv.io/)** | Audio playback (`[sound:…]`) | Required to hear card audio. Install e.g. `brew install mpv` |
 | **Nerd Font** (e.g. JetBrainsMono NF) | Play icon `󰐊` on cards with audio | Optional; without it the glyph may look like a box |
-| **[yazi](https://yazi-rs.github.io/)** | Pick images in Add/Edit (`Ctrl+o` / `Alt+o`) | Optional. Install yazi; without it, insert image shows an error. |
+| **[yazi](https://yazi-rs.github.io/)** | Pick images in Add/Edit (`Ctrl+o` / `Alt+o`) | Optional. Without it, insert image shows an error. |
 | **[Kitty](https://sw.kovidgoyal.net/kitty/)** (or a Kitty-protocol terminal) | Inline images (`<img src="…">`) | Requires [Kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/). WezTerm also works. Plain terminals show `[img]` placeholders only. |
 
 Without mpv, study still works but audio is skipped. Without Kitty protocol, images show as `[img]` placeholders only.
@@ -35,6 +50,7 @@ Without mpv, study still works but audio is skipped. Without Kitty protocol, ima
 ## Run
 
 ```bash
+python3 -m pip install --user anki   # once per machine / Python
 cargo run --release
 ```
 

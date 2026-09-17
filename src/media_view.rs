@@ -328,13 +328,18 @@ impl MediaSession {
 
         if side_changed {
             self.stop_audio();
-            if let Some(MediaRef::Sound(fname)) = parsed
+            let sounds: Vec<_> = parsed
                 .media
                 .iter()
-                .find(|m| matches!(m, MediaRef::Sound(_)))
-            {
-                if let Ok(path) = media_path(fname) {
-                    let _ = self.play_mpv(&path);
+                .filter_map(|m| match m {
+                    MediaRef::Sound(f) => Some(f.as_str()),
+                    _ => None,
+                })
+                .collect();
+            if !sounds.is_empty() {
+                if let Ok(paths) = sounds.iter().map(|f| media_path(f)).collect::<Result<Vec<_>>>()
+                {
+                    let _ = self.play_mpv_playlist(&paths);
                 }
             }
         }
@@ -452,28 +457,6 @@ impl MediaSession {
         self.stop_audio();
         self.play_mpv_playlist(&paths)?;
         Ok(format!("Playing {} file(s) via mpv", paths.len()))
-    }
-
-    fn play_mpv(&mut self, path: &Path) -> Result<()> {
-        if !mpv_available() {
-            bail!("mpv not found");
-        }
-        self.stop_audio();
-        let child = Command::new("mpv")
-            .args([
-                "--no-terminal",
-                "--force-window=no",
-                "--audio-display=no",
-                "--keep-open=no",
-            ])
-            .arg(path)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .context("spawn mpv")?;
-        self.player = Some(child);
-        Ok(())
     }
 
     fn play_mpv_playlist(&mut self, paths: &[PathBuf]) -> Result<()> {

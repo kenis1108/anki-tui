@@ -26,15 +26,19 @@ Terminal Anki client written in Rust (ratatui) and backed by Anki's official sch
 
 **Python 3 + [`anki`](https://pypi.org/project/anki/)** — official collection, scheduler, and AnkiWeb sync. Login / F2–F5 fail with `No module named 'anki'` if this is missing.
 
-```bash
-# install into the same python3 that appears first on your PATH
-python3 -m pip install --user anki
+Homebrew Python is PEP 668–managed, so `pip install --user` often fails after a Python upgrade. Use a project venv instead:
 
-# verify
-python3 -c 'from anki.collection import Collection'
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -U pip anki
+
+# verify (anki-tui prefers ./.venv/bin/python3 automatically)
+.venv/bin/python -c 'from anki.collection import Collection'
 ```
 
-Keep the package version roughly aligned with Anki Desktop. On a new machine, reinstall this even if the repo already builds.
+Optional override: `ANKI_TUI_PYTHON=/path/to/python`.
+
+Keep the package version roughly aligned with Anki Desktop. Re-create the venv after Homebrew bumps the default Python.
 
 ### Runtime (media / optional)
 
@@ -50,7 +54,8 @@ Without mpv, study still works but audio is skipped. Without Kitty protocol, ima
 ## Run
 
 ```bash
-python3 -m pip install --user anki   # once per machine / Python
+python3 -m venv .venv                 # once
+.venv/bin/pip install anki            # once per venv / Python bump
 cargo run --release
 ```
 

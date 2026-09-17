@@ -1,5 +1,5 @@
 use std::io::{BufRead, BufReader, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
@@ -14,6 +14,22 @@ use crate::models::{
 
 const HELPER: &str = include_str!("../scripts/anki_backend.py");
 const PROGRESS_PREFIX: &str = "ANKI_TUI_PROGRESS ";
+
+fn python_bin() -> PathBuf {
+    static PYTHON: OnceLock<PathBuf> = OnceLock::new();
+    PYTHON
+        .get_or_init(|| {
+            if let Ok(path) = std::env::var("ANKI_TUI_PYTHON") {
+                return PathBuf::from(path);
+            }
+            let local = Path::new(".venv").join("bin").join("python3");
+            if local.is_file() {
+                return local;
+            }
+            PathBuf::from("python3")
+        })
+        .clone()
+}
 
 #[derive(Debug, Deserialize)]
 struct Response {
@@ -113,7 +129,7 @@ fn call_at<T: DeserializeOwned>(collection: &Path, action: &str, args: Value) ->
         "args": args,
     }))?;
 
-    let mut child = Command::new("python3")
+    let mut child = Command::new(python_bin())
         .arg("-c")
         .arg(HELPER)
         .stdin(Stdio::piped())
@@ -158,7 +174,7 @@ fn call_at_with_progress<T: DeserializeOwned>(
         "args": args,
     }))?;
 
-    let mut child = Command::new("python3")
+    let mut child = Command::new(python_bin())
         .arg("-c")
         .arg(HELPER)
         .stdin(Stdio::piped())
@@ -209,7 +225,7 @@ pub fn health() -> Result<Health> {
 pub fn available() -> bool {
     static AVAILABLE: OnceLock<bool> = OnceLock::new();
     *AVAILABLE.get_or_init(|| {
-        Command::new("python3")
+        Command::new(python_bin())
             .args(["-c", "import anki"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
